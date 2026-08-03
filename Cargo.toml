@@ -1,0 +1,23 @@
+[package]
+name = "sandme"
+version = "0.1.0"
+edition = "2024"
+
+[lints.clippy]
+all = { level = "deny", priority = -1 }
+pedantic = { level = "warn", priority = -1 }
+# Size limits from docs/guidelines/code/simplicity.md §2. These two are nursery lints, so the
+# group settings above do not reach them. Thresholds live in clippy.toml.
+cognitive_complexity = "warn"
+excessive_nesting = "warn"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+hyper = { version = "1", features = ["full"] }
+http-body-util = "0.1"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_derive = "1"
+toml = "0.9"
+thiserror = "2"

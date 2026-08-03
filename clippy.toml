@@ -1,0 +1,6 @@
+# Size limits from docs/guidelines/code/simplicity.md §2.
+# Nesting: clippy counts the function body as one level, so a 3-level limit is 4 here.
+too-many-lines-threshold = 50
+cognitive-complexity-threshold = 15
+excessive-nesting-threshold = 4
+too-many-arguments-threshold = 5
