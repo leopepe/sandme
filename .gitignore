@@ -1,0 +1,4 @@
+/target
+.pi/
+.plans
+.claude/settings.local.json
