@@ -10,3 +10,7 @@ Usage:
 sandme <command>
 $ sandme 'zed ~/Workspace/'
 ```
+
+```shell
+$ sandme 'fish'
+```
