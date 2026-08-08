@@ -35,7 +35,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow file-write* (literal \"/dev/null\"))\n\
          (allow file-read* (literal \"/\"))\n\
          (allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/System\") (subpath \"/Library\") (subpath \"/Applications\"))\n\
-         (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n"
+         (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
     );
 
     for path in &config.shared_paths {
@@ -98,12 +98,12 @@ fn resolve_app_bundle_executable(program: &str) -> String {
     let resolved = std::fs::canonicalize(program)
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|_| program.to_string());
-    
+
     // Check if the resolved path is inside an app bundle
     if let Some(contents_idx) = resolved.find(".app/Contents/") {
         let bundle_path = &resolved[..contents_idx + 4]; // Include ".app"
         let plist_path = format!("{bundle_path}/Contents/Info.plist");
-        
+
         // Try to read the bundle identifier from Info.plist
         if let Ok(plist_content) = std::fs::read_to_string(&plist_path) {
             // Simple XML parsing for CFBundleExecutable
@@ -113,11 +113,12 @@ fn resolve_app_bundle_executable(program: &str) -> String {
                     let value_after = &after_key[value_start + 8..];
                     if let Some(value_end) = value_after.find("</string>") {
                         let executable_name = &value_after[..value_end];
-                        let main_executable = format!("{bundle_path}/Contents/MacOS/{executable_name}");
-                        
+                        let main_executable =
+                            format!("{bundle_path}/Contents/MacOS/{executable_name}");
+
                         // If the main executable exists and differs from the resolved program, use it
-                        if std::path::Path::new(&main_executable).exists() 
-                            && main_executable != resolved 
+                        if std::path::Path::new(&main_executable).exists()
+                            && main_executable != resolved
                         {
                             return main_executable;
                         }
@@ -126,7 +127,7 @@ fn resolve_app_bundle_executable(program: &str) -> String {
             }
         }
     }
-    
+
     resolved
 }
 
