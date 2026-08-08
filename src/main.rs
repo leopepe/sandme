@@ -6,6 +6,7 @@ mod error;
 mod proxy;
 mod sandbox;
 
+use std::os::unix::process::ExitStatusExt;
 use std::process::ExitCode;
 
 use clap::Parser;
@@ -14,8 +15,9 @@ use clap::Parser;
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
-    /// The command to run sandboxed (e.g. "zed ~/Workspace/")
-    command: String,
+    /// Command to run sandboxed, with its arguments
+    #[arg(required = true, trailing_var_arg = true, allow_hyphen_values = true)]
+    command: Vec<String>,
 }
 
 #[tokio::main]
@@ -40,9 +42,6 @@ async fn main() -> ExitCode {
         }
     };
 
-    println!("sandme: proxy listening on {}", server.addr());
-    println!("sandme: shared paths: {:?}", config.shared_paths);
-
     match sandbox::run(&config, server.addr(), &cli.command).await {
         Ok(status) => exit_code(status),
         Err(error) => {
@@ -54,17 +53,18 @@ async fn main() -> ExitCode {
 }
 
 /// Map the sandboxed command's status to sandme's exit code.
+///
+/// Follows the exec-wrapper convention (docs/guidelines/architecture/posix.md
+/// §4): the child's status is propagated unchanged, and termination by a
+/// signal becomes `128+n`.
 fn exit_code(status: std::process::ExitStatus) -> ExitCode {
     if status.success() {
         return ExitCode::SUCCESS;
     }
-    // FR-002: propagate the child's exit code. `ExitCode` holds a u8, so the
-    // code is clamped into range; a child killed by a signal maps to 1.
-    #[allow(
-        clippy::cast_sign_loss,
-        reason = "FR-002: clamped into ExitCode's u8 range"
-    )]
+    if let Some(signal) = status.signal() {
+        return ExitCode::from(u8::try_from(128 + signal).unwrap_or(u8::MAX));
+    }
     status.code().map_or(ExitCode::FAILURE, |code| {
-        ExitCode::from(code.clamp(0, 255) as u8)
+        ExitCode::from(u8::try_from(code).unwrap_or(u8::MAX))
     })
 }
