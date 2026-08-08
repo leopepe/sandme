@@ -1,3 +1,6 @@
+//! sandme — run a coding IDE or code agent inside a macOS Seatbelt sandbox,
+//! with its network egress routed through a proxy sandme manages.
+
 mod config;
 mod error;
 mod proxy;
@@ -15,38 +18,53 @@ struct Cli {
     command: String,
 }
 
-fn main() -> ExitCode {
+#[tokio::main]
+async fn main() -> ExitCode {
     let cli = Cli::parse();
 
-    // Load configuration
     let config = match config::load() {
-        Ok(c) => c,
-        Err(e) => {
-            eprintln!("sandme: config error: {e}");
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("sandme: {error}");
             return ExitCode::FAILURE;
         }
     };
 
-    println!("sandme: running sandboxed command: {}", cli.command);
-    println!("sandme: shared paths: {:?}", config.shared_paths);
-    println!("sandme: proxy port: {}", config.proxy_port);
-
-    // Run the command under the sandbox
-    match sandbox::run(&config, &cli.command) {
-        Ok(status) => {
-            if status.success() {
-                ExitCode::SUCCESS
-            } else {
-                // ExitCode only accepts u8; clamp i32 to valid range
-                status
-                    .code()
-                    .map(|c| ExitCode::from(c.clamp(0, 255) as u8))
-                    .unwrap_or(ExitCode::FAILURE)
-            }
+    // The proxy comes up first: a sandbox without its proxy is a broken
+    // sandbox, so the invocation fails instead (FR-005).
+    let server = match proxy::serve(config.proxy_port) {
+        Ok(server) => server,
+        Err(error) => {
+            eprintln!("sandme: {error}");
+            return ExitCode::FAILURE;
         }
-        Err(e) => {
-            eprintln!("sandme: {e}");
+    };
+
+    println!("sandme: proxy listening on {}", server.addr());
+    println!("sandme: shared paths: {:?}", config.shared_paths);
+
+    match sandbox::run(&config, server.addr(), &cli.command).await {
+        Ok(status) => exit_code(status),
+        Err(error) => {
+            eprintln!("sandme: {error}");
             ExitCode::FAILURE
         }
     }
+    // `server` is dropped here: the proxy's lifetime follows the command's (T-007).
+}
+
+/// Map the sandboxed command's status to sandme's exit code.
+fn exit_code(status: std::process::ExitStatus) -> ExitCode {
+    if status.success() {
+        return ExitCode::SUCCESS;
+    }
+    // FR-002: propagate the child's exit code. `ExitCode` holds a u8, so the
+    // code is clamped into range; a child killed by a signal maps to 1.
+    #[allow(
+        clippy::cast_sign_loss,
+        reason = "FR-002: clamped into ExitCode's u8 range"
+    )]
+    status.code().map_or(ExitCode::FAILURE, |code| {
+        ExitCode::from(code.clamp(0, 255) as u8)
+    })
 }
