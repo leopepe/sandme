@@ -13,6 +13,25 @@
 
 ## Procedure
 
+This agent is standalone — it does not compose skills.
+
+- **Authority:** AWS Well-Architected Framework (external standard, not project guidelines)
+- **No gate-checking:** This agent reviews ADRs and IaC files, not code changes. The gate
+  (`cargo fmt`, `cargo clippy`, etc.) does not apply to markdown or infrastructure files.
+- **No guideline delegation:** This agent does not delegate to `review-standards` because it
+  checks AWS compliance, not project guideline compliance.
+
+### Composition contract
+
+```
+sandme --agent aws-architect
+  └── standalone: no skill composition
+  └── authority: AWS Well-Architected Framework (external)
+  └── produces the report defined below (no skill template)
+```
+
+Steps the agent performs:
+
 1. **Identify the scope.** Determine whether to review an ADR, IaC files, or both.
 2. **Check if AWS.** For each file under review, verify it references AWS resources:
    - ADRs that mention AWS services, infrastructure, or cloud deployments.

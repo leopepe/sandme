@@ -40,8 +40,8 @@ native desktop experience of an IDE.
   traffic be routed through it. Any policy layer is a later spec.
 - A GUI, daemon, or persistent service. sandme's lifetime is the lifetime of the
   command it launches.
-- Shell interpretation of the command line: sandme splits the command into words and
-  executes it directly; pipes, redirection and variable expansion are out of scope.
+- Shell interpretation of the command line: the operands reach the command
+  unchanged; pipes, redirection, globbing and variable expansion are out of scope.
 
 ## User scenarios *(mandatory)*
 
@@ -52,7 +52,7 @@ runs confined to a sandbox instead of with my full user privileges.
 
 **Acceptance scenarios**
 
-1. **Given** sandme is installed, **When** the user runs `sandme 'zed ~/Workspace/'`,
+1. **Given** sandme is installed, **When** the user runs `sandme zed ~/Workspace/`,
    **Then** Zed starts and runs inside a Seatbelt sandbox.
 2. **Given** a sandboxed command is running, **When** it invokes a subcommand or spawns
    a new process, **Then** that child process also runs under the same sandbox.
@@ -108,7 +108,8 @@ them per invocation.
   not abort the invocation.
 - The sandboxed command exits, crashes, or is interrupted with Ctrl-C → the proxy stops
   and sandme exits; nothing outlives the command.
-- The command does not exist or is not executable → sandme reports it and exits 1.
+- The command does not exist or is not executable → the sandbox layer reports
+  it and sandme propagates that status.
 - A shared path does not exist → the sandbox simply never grants it. A shared path that
   is a symlink is resolved first; the resolved target is what gets shared.
 - Network traffic the proxy cannot handle (non-HTTP protocols, DNS, raw sockets) is
@@ -129,6 +130,9 @@ them per invocation.
   concurrent task and run the sandboxed command in a separate process, in parallel.
 - **FR-006**: THE SYSTEM SHALL automatically route the sandboxed command's network
   traffic through that proxy server, without requiring the user to configure the proxy.
+  To that end sandme sets `HTTP_PROXY`/`HTTPS_PROXY` (upper- and lowercase) in the
+  child's environment, overriding any value already present: FR-006 cannot hold if the
+  child may bypass the proxy (the override is recorded here per posix.md §6).
 - **FR-007**: THE SYSTEM SHALL read a local configuration file, defaulting to
   `~/.sandme/config.toml`.
 - **FR-008**: THE SYSTEM SHALL support configuration through environment variables.
@@ -152,7 +156,7 @@ them per invocation.
 
 | Flag / argument | Type | Default | Description |
 | --- | --- | --- | --- |
-| `<command>` | string (positional) | required | The command line to run sandboxed, e.g. `sandme 'zed ~/Workspace/'`. Split into words with shell-style quoting (single quotes, double quotes, backslash escapes) and executed directly — no shell is spawned. |
+| `<command> [args...]` | operands | required | The command to run sandboxed, with its arguments, e.g. `sandme zed ~/Workspace/`. The operands are passed to the command unshelled and unquoted — the child receives its own argument vector. `--` terminates sandme's option parsing, so the child's own options reach it: `sandme -- curl -sS https://example.com/`. |
 
 The PoC exposes no other flags; shared paths are configured through the config file or
 environment only.
@@ -161,8 +165,8 @@ environment only.
 
 | Key | Env var | Type | Default | Description |
 | --- | --- | --- | --- | --- |
-| `shared_paths` | `SANDEME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` | Filesystem paths the sandboxed command may read and write. `~/` prefixes expand to the home directory; symlinks are resolved. |
-| `proxy_port` | `SANDEME_PROXY_PORT` | integer (u16) | `8787` | Loopback port the egress proxy listens on. |
+| `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` | Filesystem paths the sandboxed command may read and write. `~/` prefixes expand to the home directory; symlinks are resolved. |
+| `proxy_port` | `SANDME_PROXY_PORT` | integer (u16) | `8787` | Loopback port the egress proxy listens on. |
 
 Config file location: `~/.sandme/config.toml` (FR-007).
 
@@ -171,8 +175,8 @@ Config file location: `~/.sandme/config.toml` (FR-007).
 | Code | Condition | Message to user |
 | --- | --- | --- |
 | `0` | The sandboxed command exited `0`. | — |
-| `1`–`255` | The sandboxed command's own exit code, propagated (clamped to the `u8` range). A child killed by a signal maps to `1`. | — |
-| `1` | sandme itself failed: unreadable or malformed config, unparsable command, proxy could not bind its port, or the command could not be started. | A message naming the cause (and a hint where one exists). |
+| `1`–`125` | The sandboxed command's own exit code, propagated unchanged — including statuses produced by the sandbox layer itself, e.g. `71` when the command is not found. `1` is also sandme's own failure code (unreadable or malformed config, proxy could not bind its port, command could not be started). | A message naming the cause (and a hint where one exists). |
+| `128+n` | The sandboxed command was terminated by signal `n` (a Ctrl-C child reports `130`). | — |
 
 ## Key entities
 
@@ -201,7 +205,6 @@ Config file location: `~/.sandme/config.toml` (FR-007).
 - `serde`, `toml` — configuration
 - `thiserror` — error types
 - `hyper`, `hyper-util`, `tokio` — proxy server and process lifecycle
-- `shell-words` — command-line word splitting
 
 ## Success criteria *(mandatory)*
 
@@ -218,8 +221,8 @@ Config file location: `~/.sandme/config.toml` (FR-007).
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-001 | Integration tests in `tests/cli.rs` — the built binary driven through its CLI, including a quoted argument with embedded spaces. |
-| FR-002 | `prints_child_output` and `propagates_child_exit_status` (`tests/cli.rs`). |
+| FR-001 | Integration tests in `tests/cli.rs` — the built binary driven through its CLI, including a multi-word operand passed to the child unchanged (`passes_multi_word_arguments_unchanged`). |
+| FR-002 | `prints_child_output`, `propagates_child_exit_status`-equivalent propagation and `reports_signal_deaths_as_128_plus_n` (`tests/cli.rs`). |
 | FR-003 | Seatbelt applies the profile to the whole process tree (`process-exec` without `no-sandbox`); verified manually: a sandboxed shell launching `curl` gets its non-proxy egress denied. |
 | FR-004 | `denies_writes_outside_shared_paths` (`tests/cli.rs`) plus manual read-denial verification. |
 | FR-005 | Manual: proxy task and sandboxed command alive concurrently; proxy stops when the command exits. |
@@ -239,11 +242,7 @@ being overturned. -->
 - The proxy is an HTTP proxy, so "network traffic" in FR-006 means HTTP/HTTPS traffic.
   Other protocols are denied by the sandbox.
 - The proxy's lifetime is bound to the sandboxed command's lifetime; sandme is not a
-  long-running daemon. The proxy runs as a concurrent task inside the sandme process
-  rather than a separate process — simpler lifecycle, same observable behaviour.
-- The command line is parsed by sandme (shell-style word splitting) and executed
-  directly; no shell is spawned, so pipes, redirection and variable expansion are not
-  available.
+  long-running daemon.
 - "sandme poc" indicates proof-of-concept scope: correctness of the core mechanism
   matters more than packaging, distribution or performance tuning.
 
@@ -266,4 +265,5 @@ None — all resolved; see the 2026-08-08 changelog entry.
 | Date | Change |
 | --- | --- |
 | 2026-08-02 | Converted the original free-form project notes into the spec template. No requirements added or removed; gaps recorded as open questions. |
-| 2026-08-08 | PoC implemented (T-001…T-007); status → Accepted. Open questions resolved: precedence is environment > config file (FR-009); config keys are `shared_paths`/`proxy_port` with `SANDEME_*` env vars; the child's exit code is propagated (signal death → 1, sandme failures → 1); absent config → defaults, malformed config → error; proxy startup failure fails the invocation, the proxy stops with the command, per-request failures answer 502; non-proxy network is denied by the sandbox. FR-005 updated: the proxy is a concurrent task inside sandme, not a separate process. Command-line parsing (shell-style quoting, direct exec) recorded in the interface contract. NFR-003 withdrawn for the PoC. |
+| 2026-08-08 | PoC implemented (T-001…T-007); status → Accepted. All open questions resolved in the body; FR-005 records the proxy as a concurrent task; NFR-003 withdrawn. |
+| 2026-08-08 | Interface aligned with `docs/guidelines/architecture/posix.md`: the command is operands, not a quoted string (`shell-words` removed); env vars use the `SANDME_` prefix; signal deaths exit `128+n`; stdout carries only the child's output; the profile reaches `sandbox-exec` via `-p`; the config file is parsed with serde and malformed input is reported. |

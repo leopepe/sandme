@@ -13,6 +13,24 @@
 
 ## Procedure
 
+This agent is standalone — it does not compose skills.
+
+- **Authority:** Spec template `docs/specs/0000-spec-template.md` (project standard)
+- **No gate-checking:** This agent writes specs, not code. The gate does not apply.
+- **No guideline delegation:** This agent does not delegate to `review-standards` because it
+  produces output (specs), not code reviews.
+
+### Composition contract
+
+```
+sandme --agent spec-generator
+  └── standalone: no skill composition
+  └── authority: docs/specs/0000-spec-template.md (project standard)
+  └── produces the spec file defined below (no skill template)
+```
+
+Steps the agent performs:
+
 1. **Parse the user story.** Extract:
    - **What:** the capability or feature being requested.
    - **Why:** the user's motivation or the problem being solved.

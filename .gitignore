@@ -2,3 +2,4 @@
 .pi/
 .plans
 .claude/settings.local.json
+.pi-subagents/
