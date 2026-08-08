@@ -1,131 +1,167 @@
-use std::io::Write;
-use std::process::{Command, ExitStatus};
+//! Seatbelt sandbox profile generation and sandboxed command execution.
+
+use std::fmt::Write;
+use std::net::SocketAddr;
+use std::path::PathBuf;
+use std::process::ExitStatus;
 
 use crate::config::Config;
+use crate::error::SandmeError;
 
-/// Generate a macOS Seatbelt sandbox profile XML for the given config.
+/// Generate the Seatbelt (SBPL) profile applied to the sandboxed command.
 ///
-/// The profile:
-/// - Denies all filesystem access by default
-/// - Allows access to shared paths only
-/// - Allows network access only through the proxy (localhost:<port>)
-/// - Allows necessary system paths for execution
-pub fn generate_profile(config: &Config) -> Result<String, ProfileError> {
-    let mut xml = String::new();
+/// Everything is denied by default (FR-004): the command keeps the process
+/// mechanics macOS needs to start, read-only access to the system runtime,
+/// read-write access to the shared paths, and network egress to the proxy
+/// and nothing else (FR-006).
+pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
+    let mut sbpl = String::from(
+        "(version 1)\n\
+         (deny default)\n\
+         (allow process-exec)\n\
+         (allow process-fork)\n\
+         (allow process-info-pidinfo)\n\
+         (allow signal (target self))\n\
+         (allow sysctl-read)\n\
+         (allow mach-lookup)\n\
+         (allow ipc-posix-shm*)\n\
+         (allow file-read-metadata)\n\
+         (allow file-read* (literal \"/dev/urandom\") (literal \"/dev/tty\") (literal \"/dev/null\"))\n\
+         (allow file-write* (literal \"/dev/null\") (literal \"/dev/tty\"))\n\
+         (allow file-read* (literal \"/\"))\n\
+         (allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/System\") (subpath \"/Library\"))\n\
+         (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
+    );
 
-    // Start profile
-    xml.push_str("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n");
-    xml.push_str("<sandbox>\n");
+    if let Ok(tmpdir) = std::env::var("TMPDIR") {
+        let _ = writeln!(
+            sbpl,
+            "(allow file-read* file-write* (subpath \"{tmpdir}\"))"
+        );
+    }
 
-    // Deny all filesystem access by default
-    xml.push_str("  <deny-all>\n");
-    xml.push_str("    <filesystem>\n");
-    xml.push_str("      <deny-all/>\n");
-    xml.push_str("    </filesystem>\n");
-    xml.push_str("  </deny-all>\n");
-
-    // Allow shared paths
-    xml.push_str("  <allow>\n");
-    xml.push_str("    <filesystem>\n");
-
-    // Always allow /usr (system libs)
-    xml.push_str("      <allow-path>/usr</allow-path>\n");
-    // Always allow /private (system)
-    xml.push_str("      <allow-path>/private</allow-path>\n");
-    // Always allow /tmp
-    xml.push_str("      <allow-path>/tmp</allow-path>\n");
-
-    // Add user-specified shared paths
     for path in &config.shared_paths {
-        // Expand ~ to home directory
         let expanded = expand_path(path);
-        xml.push_str(&format!("      <allow-path>{}</allow-path>\n", expanded));
+        let _ = writeln!(
+            sbpl,
+            "(allow file-read* file-write* (subpath \"{expanded}\"))"
+        );
     }
 
-    xml.push_str("    </filesystem>\n");
-    xml.push_str("  </allow>\n");
-
-    // Allow network only through proxy
-    xml.push_str("  <allow>\n");
-    xml.push_str("    <network>\n");
-    xml.push_str("      <allow-rule port=\"any\" protocol=\"tcp\"/>\n");
-    xml.push_str("      <allow-rule port=\"any\" protocol=\"udp\"/>\n");
-    xml.push_str("    </network>\n");
-    xml.push_str("  </allow>\n");
-
-    // Close profile
-    xml.push_str("</sandbox>\n");
-
-    Ok(xml)
+    let _ = writeln!(
+        sbpl,
+        "(allow network-outbound (remote ip \"localhost:{}\"))",
+        proxy.port()
+    );
+    sbpl
 }
 
-/// Expand a path starting with ~ to the home directory.
+/// Expand a path starting with ~ to the home directory, and resolve
+/// symlinks so the profile matches the kernel's view of the path.
 fn expand_path(path: &str) -> String {
-    if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME") {
-            return format!("{}/{}", home, rest);
-        }
-    path.to_string()
+    let expanded = if let Some(rest) = path.strip_prefix("~/")
+        && let Ok(home) = std::env::var("HOME")
+    {
+        format!("{home}/{rest}")
+    } else {
+        path.to_string()
+    };
+    std::fs::canonicalize(&expanded).map_or(expanded, |resolved| resolved.display().to_string())
 }
 
-/// Execute a command under the Seatbelt sandbox.
+/// Execute a command under the Seatbelt sandbox and wait for it.
 ///
-/// 1. Generate the sandbox profile to a temp file.
-/// 2. Run `sandbox-exec -f <profile> <command>`.
-/// 3. Clean up the profile file.
-/// 4. Return the exit status.
-pub fn run(config: &Config, command: &str) -> Result<ExitStatus, SandboxError> {
-    // Generate profile
-    let profile_xml = generate_profile(config)?;
+/// The command line is split with shell-style quoting, so multi-word
+/// arguments survive (`sandme 'sh -c "exit 3"'`). The command's egress is
+/// wired to the proxy without any configuration of its own (FR-006):
+/// `HTTP_PROXY`/`HTTPS_PROXY` point at `proxy`, and the profile allows no
+/// other network destination. Ctrl-C kills the child so sandme can shut
+/// down with it (T-007).
+pub async fn run(
+    config: &Config,
+    proxy: SocketAddr,
+    command: &str,
+) -> Result<ExitStatus, SandmeError> {
+    let mut parts = shell_words::split(command)
+        .map_err(|error| SandmeError::CommandParse(error.to_string()))?
+        .into_iter();
+    let Some(program) = parts.next() else {
+        return Err(SandmeError::EmptyCommand);
+    };
+    let args: Vec<String> = parts.collect();
 
-    // Write profile to temp file
-    let mut profile_file = std::env::temp_dir();
-    profile_file.push("sandme-profile.xml");
+    let profile_path = write_profile(config, proxy)?;
 
-    let mut f = std::fs::File::create(&profile_file)
-        .map_err(SandboxError::ProfileWrite)?;
-    f.write_all(profile_xml.as_bytes())
-        .map_err(SandboxError::ProfileWrite)?;
-    drop(f);
-
-    // Parse the command string into parts
-    let args: Vec<&str> = command.split_whitespace().collect();
-    if args.is_empty() {
-        return Err(SandboxError::EmptyCommand);
-    }
-
-    // Run under sandbox-exec
-    let status = Command::new("sandbox-exec")
+    let mut child = tokio::process::Command::new("sandbox-exec")
         .arg("-f")
-        .arg(&profile_file)
-        .arg(args[0])
-        .args(&args[1..])
-        .status()
-        .map_err(SandboxError::Execute)?;
+        .arg(&profile_path)
+        .arg(program)
+        .args(&args)
+        .env("HTTP_PROXY", format!("http://{proxy}"))
+        .env("HTTPS_PROXY", format!("http://{proxy}"))
+        .env("http_proxy", format!("http://{proxy}"))
+        .env("https_proxy", format!("http://{proxy}"))
+        .spawn()
+        .map_err(SandmeError::Execute)?;
 
-    // Clean up profile
-    let _ = std::fs::remove_file(&profile_file);
+    let status = tokio::select! {
+        status = child.wait() => status.map_err(SandmeError::Execute)?,
+        _ = tokio::signal::ctrl_c() => {
+            let _ = child.kill().await;
+            child.wait().await.map_err(SandmeError::Execute)?
+        }
+    };
 
+    let _ = std::fs::remove_file(&profile_path);
     Ok(status)
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum ProfileError {
-    #[error("failed to write sandbox profile: {0}")]
-    ProfileWrite(#[from] std::io::Error),
+/// Write the profile to a private temp file for `sandbox-exec -f`.
+fn write_profile(config: &Config, proxy: SocketAddr) -> Result<PathBuf, SandmeError> {
+    let mut path = std::env::temp_dir();
+    path.push(format!("sandme-profile-{}.sb", std::process::id()));
+    std::fs::write(&path, generate_profile(config, proxy)).map_err(SandmeError::ProfileWrite)?;
+    Ok(path)
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum SandboxError {
-    #[error("sandbox profile error: {0}")]
-    Profile(#[from] ProfileError),
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::net::{Ipv4Addr, SocketAddr};
 
-    #[error("failed to write sandbox profile: {0}")]
-    ProfileWrite(std::io::Error),
+    fn config_with(paths: &[&str]) -> Config {
+        Config {
+            shared_paths: paths.iter().map(|p| (*p).to_string()).collect(),
+            proxy_port: 8787,
+        }
+    }
 
-    #[error("failed to execute command: {0}")]
-    Execute(#[from] std::io::Error),
+    #[test]
+    fn denies_everything_by_default() {
+        let profile = generate_profile(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
 
-    #[error("empty command")]
-    EmptyCommand,
+        assert!(profile.starts_with("(version 1)\n(deny default)\n"));
+    }
+
+    #[test]
+    fn shares_configured_paths_read_write() {
+        let profile = generate_profile(
+            &config_with(&["/tmp/sandme-test"]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        assert!(profile.contains("(allow file-read* file-write* (subpath \"/tmp/sandme-test\"))"));
+    }
+
+    #[test]
+    fn routes_network_only_to_the_proxy() {
+        let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 8787));
+        let profile = generate_profile(&config_with(&[]), proxy);
+
+        assert!(profile.contains("(allow network-outbound (remote ip \"localhost:8787\"))"));
+        assert!(!profile.contains("network-bind"));
+    }
 }
