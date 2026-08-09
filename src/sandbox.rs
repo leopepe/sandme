@@ -2,7 +2,6 @@
 
 use std::fmt::Write;
 use std::net::SocketAddr;
-use std::path::PathBuf;
 use std::process::ExitStatus;
 
 use crate::config::Config;
@@ -32,13 +31,6 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/System\") (subpath \"/Library\"))\n\
          (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
     );
-
-    if let Ok(tmpdir) = std::env::var("TMPDIR") {
-        let _ = writeln!(
-            sbpl,
-            "(allow file-read* file-write* (subpath \"{tmpdir}\"))"
-        );
-    }
 
     for path in &config.shared_paths {
         let expanded = expand_path(path);
@@ -71,36 +63,35 @@ fn expand_path(path: &str) -> String {
 
 /// Execute a command under the Seatbelt sandbox and wait for it.
 ///
-/// The command line is split with shell-style quoting, so multi-word
-/// arguments survive (`sandme 'sh -c "exit 3"'`). The command's egress is
-/// wired to the proxy without any configuration of its own (FR-006):
-/// `HTTP_PROXY`/`HTTPS_PROXY` point at `proxy`, and the profile allows no
-/// other network destination. Ctrl-C kills the child so sandme can shut
-/// down with it (T-007).
+/// The operands reach the child unshelled and unquoted: `program` is
+/// executed directly with `args` (posix.md §5). The profile is handed to
+/// `sandbox-exec -p`, so nothing sensitive touches a temp file. The
+/// command's egress is wired to the proxy without any configuration of its
+/// own (FR-006): `HTTP_PROXY`/`HTTPS_PROXY` point at `proxy`, and the
+/// profile allows no other network destination. Ctrl-C kills the child so
+/// sandme can shut down with it (T-007).
 pub async fn run(
     config: &Config,
     proxy: SocketAddr,
-    command: &str,
+    command: &[String],
 ) -> Result<ExitStatus, SandmeError> {
-    let mut parts = shell_words::split(command)
-        .map_err(|error| SandmeError::CommandParse(error.to_string()))?
-        .into_iter();
-    let Some(program) = parts.next() else {
-        return Err(SandmeError::EmptyCommand);
-    };
-    let args: Vec<String> = parts.collect();
+    // clap's required trailing operand guarantees at least one word.
+    let (program, args) = command
+        .split_first()
+        .expect("clap requires at least one operand");
 
-    let profile_path = write_profile(config, proxy)?;
+    let profile = generate_profile(config, proxy);
+    let proxy_url = format!("http://{proxy}");
 
     let mut child = tokio::process::Command::new("sandbox-exec")
-        .arg("-f")
-        .arg(&profile_path)
+        .arg("-p")
+        .arg(&profile)
         .arg(program)
-        .args(&args)
-        .env("HTTP_PROXY", format!("http://{proxy}"))
-        .env("HTTPS_PROXY", format!("http://{proxy}"))
-        .env("http_proxy", format!("http://{proxy}"))
-        .env("https_proxy", format!("http://{proxy}"))
+        .args(args)
+        .env("HTTP_PROXY", &proxy_url)
+        .env("HTTPS_PROXY", &proxy_url)
+        .env("http_proxy", &proxy_url)
+        .env("https_proxy", &proxy_url)
         .spawn()
         .map_err(SandmeError::Execute)?;
 
@@ -112,16 +103,7 @@ pub async fn run(
         }
     };
 
-    let _ = std::fs::remove_file(&profile_path);
     Ok(status)
-}
-
-/// Write the profile to a private temp file for `sandbox-exec -f`.
-fn write_profile(config: &Config, proxy: SocketAddr) -> Result<PathBuf, SandmeError> {
-    let mut path = std::env::temp_dir();
-    path.push(format!("sandme-profile-{}.sb", std::process::id()));
-    std::fs::write(&path, generate_profile(config, proxy)).map_err(SandmeError::ProfileWrite)?;
-    Ok(path)
 }
 
 #[cfg(test)]
