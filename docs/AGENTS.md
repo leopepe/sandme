@@ -22,9 +22,9 @@ not by when it was written.
 - **Before proposing anything**: the specs whose `Status` is `Accepted` or `Implemented`. They
   are the current contract.
 - **Before changing structure, or a decision expensive to reverse**: `adrs/`. Reading these
-  is how you learn why the code looks the way it does.
-- **Before writing code or a spec**: the guideline for that domain. Every guideline in
-  `guidelines/` is loaded by `/review-standards`, so a change is graded against all of them.
+  is how you learn why the code looks the way it does. An ADR at `Status: Accepted` is binding;
+  `Proposed` ADRs are discussion material and do not authorize implementation. See
+  `docs/guidelines/sdd/spec-driven-development.md` §2.1 for the ADR lifecycle and approval gate.
 
 ## When to write
 
