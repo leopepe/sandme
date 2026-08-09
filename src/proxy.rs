@@ -49,26 +49,30 @@ impl Drop for Server {
 /// before the command is launched — a sandbox without its proxy is a broken
 /// sandbox, so the whole invocation fails.
 pub fn serve(port: u16) -> Result<Server, SandmeError> {
-    let wanted = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let std_listener = std::net::TcpListener::bind(wanted)
-        .map_err(|source| SandmeError::ProxyStartup { port, source })?;
-    std_listener
-        .set_nonblocking(true)
-        .map_err(|source| SandmeError::ProxyStartup { port, source })?;
-    let addr = std_listener
-        .local_addr()
-        .map_err(|source| SandmeError::ProxyStartup { port, source })?;
+    let fail = |source| SandmeError::ProxyStartup { port, source };
 
-    let listener = TcpListener::from_std(std_listener)
-        .map_err(|source| SandmeError::ProxyStartup { port, source })?;
+    let std_listener = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+        .map_err(&fail)?;
+    std_listener.set_nonblocking(true).map_err(&fail)?;
+    let addr = std_listener.local_addr().map_err(&fail)?;
+
+    let listener = TcpListener::from_std(std_listener).map_err(&fail)?;
     let accept_loop = tokio::spawn(accept_loop(listener));
     Ok(Server { addr, accept_loop })
 }
 
 /// Accept connections until the listener is aborted.
 async fn accept_loop(listener: TcpListener) {
-    while let Ok((stream, _)) = listener.accept().await {
-        tokio::spawn(serve_connection(TokioIo::new(stream)));
+    loop {
+        match listener.accept().await {
+            Ok((stream, _)) => {
+                tokio::spawn(serve_connection(TokioIo::new(stream)));
+            }
+            Err(error) => {
+                eprintln!("sandme: proxy accept error: {error}");
+                return;
+            }
+        }
     }
 }
 
@@ -85,7 +89,7 @@ async fn serve_connection(io: TokioIo<TcpStream>) {
 /// Route one request: CONNECT opens a tunnel, anything else is forwarded.
 async fn route(req: Request<Incoming>) -> Result<Response<Body>, Infallible> {
     if req.method() == Method::CONNECT {
-        Ok(open_tunnel(req))
+        Ok(open_tunnel(req).await)
     } else {
         Ok(forward(req).await)
     }
@@ -103,17 +107,24 @@ async fn forward(req: Request<Incoming>) -> Response<Body> {
     }
 }
 
-/// Answer a CONNECT request by copying bytes between client and target.
-fn open_tunnel(req: Request<Incoming>) -> Response<Body> {
-    let target = req.uri().authority().map(ToString::to_string);
-    let upgraded = hyper::upgrade::on(req);
+/// Answer a CONNECT request, committing only once the tunnel is live.
+///
+/// The upstream connection is established before the `200` goes out, so a
+/// refused target answers `502` instead of a dead tunnel; a CONNECT without
+/// an authority answers `400`. Once both ends are up, bytes are copied in
+/// both directions until either side closes.
+async fn open_tunnel(req: Request<Incoming>) -> Response<Body> {
+    let Some(target) = req.uri().authority().map(ToString::to_string) else {
+        return response_with(StatusCode::BAD_REQUEST);
+    };
 
+    let Ok(mut upstream) = TcpStream::connect(&target).await else {
+        return response_with(StatusCode::BAD_GATEWAY);
+    };
+
+    let upgraded = hyper::upgrade::on(req);
     tokio::spawn(async move {
-        let Some(target) = target else { return };
-        let (Ok(client), Ok(mut upstream)) = (upgraded.await, TcpStream::connect(&target).await)
-        else {
-            return;
-        };
+        let Ok(client) = upgraded.await else { return };
         let mut client = TokioIo::new(client);
         let _ = tokio::io::copy_bidirectional(&mut client, &mut upstream).await;
     });

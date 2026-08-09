@@ -4,7 +4,8 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// A scratch directory standing in for the user's filesystem; removed at the end.
+/// A scratch directory standing in for the user's filesystem; recreated
+/// fresh on every run.
 fn workdir(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("sandme-test-{name}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -17,8 +18,8 @@ fn workdir(name: &str) -> PathBuf {
 fn sandme(workdir: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
     cmd.env("HOME", workdir)
-        .env("SANDEME_PROXY_PORT", free_port().to_string())
-        .env_remove("SANDEME_SHARED_PATHS")
+        .env("SANDME_PROXY_PORT", free_port().to_string())
+        .env_remove("SANDME_SHARED_PATHS")
         .current_dir(workdir);
     cmd
 }
@@ -28,28 +29,46 @@ fn prints_child_output() {
     // Given sandme and a command that prints a marker
     let dir = workdir("prints-child-output");
     let mut cmd = sandme(&dir);
-    cmd.arg("echo sandme-says-hi");
+    cmd.args(["echo", "sandme-says-hi"]);
 
     // When it is run
     let output = cmd.output().unwrap();
 
-    // Then the child's output passes through
-    assert!(String::from_utf8_lossy(&output.stdout).contains("sandme-says-hi"));
+    // Then the child's output passes through and stdout carries nothing else
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "sandme-says-hi"
+    );
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
-fn propagates_child_exit_status() {
-    // Given a quoted command whose argument contains a space
-    let dir = workdir("propagates-child-exit-status");
+fn passes_multi_word_arguments_unchanged() {
+    // Given a command whose final argument contains a space
+    let dir = workdir("passes-multi-word-arguments-unchanged");
     let mut cmd = sandme(&dir);
-    cmd.arg("sh -c \"exit 3\"");
+    cmd.args(["sh", "-c", "exit 3"]);
 
     // When it is run
     let status = cmd.status().unwrap();
 
-    // Then sandme exits with the child's code
+    // Then the argument reached the child intact, and its exit code propagates
     assert_eq!(status.code(), Some(3));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reports_signal_deaths_as_128_plus_n() {
+    // Given a command that kills itself with SIGINT (signal 2)
+    let dir = workdir("reports-signal-deaths");
+    let mut cmd = sandme(&dir);
+    cmd.args(["sh", "-c", "kill -INT $$"]);
+
+    // When it is run
+    let status = cmd.status().unwrap();
+
+    // Then sandme reports 128+2, not a collapsed value
+    assert_eq!(status.code(), Some(130));
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -60,16 +79,17 @@ fn denies_writes_outside_shared_paths() {
     let outside = std::env::temp_dir().join("sandme-test-denied-target");
     let _ = std::fs::remove_dir_all(&outside);
     std::fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("should-not-exist");
     let mut cmd = sandme(&dir);
-    cmd.env("SANDEME_SHARED_PATHS", &dir)
-        .arg(format!("touch {}/should-not-exist", outside.display()));
+    cmd.env("SANDME_SHARED_PATHS", &dir)
+        .args(["touch", &target.display().to_string()]);
 
     // When it is run
     let status = cmd.status().unwrap();
 
     // Then the sandbox denies the write
     assert!(!status.success());
-    assert!(!outside.join("should-not-exist").exists());
+    assert!(!target.exists());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&outside);
 }
@@ -85,9 +105,13 @@ async fn routes_http_egress_through_the_proxy() {
 
     let dir = workdir("routes-http-egress-through-the-proxy");
     let mut cmd = sandme(&dir);
-    cmd.arg(format!(
-        "curl -sS --max-time 10 http://127.0.0.1:{origin_port}/"
-    ));
+    cmd.args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "10",
+        &format!("http://127.0.0.1:{origin_port}/"),
+    ]);
 
     // When the sandboxed command fetches from the origin
     let output = cmd.output().unwrap();

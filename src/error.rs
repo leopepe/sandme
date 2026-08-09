@@ -26,19 +26,6 @@ pub enum SandmeError {
         source: toml::de::Error,
     },
 
-    /// No command was given to run under the sandbox.
-    #[error("no command given to run under the sandbox")]
-    EmptyCommand,
-
-    /// The command line could not be split into words (e.g. an unterminated
-    /// quote).
-    #[error("could not parse command: {0}")]
-    CommandParse(String),
-
-    /// The sandbox profile could not be written for `sandbox-exec`.
-    #[error("sandbox profile could not be written: {0}")]
-    ProfileWrite(std::io::Error),
-
     /// The sandboxed command could not be started.
     #[error("sandboxed command could not be started: {0}")]
     Execute(std::io::Error),
