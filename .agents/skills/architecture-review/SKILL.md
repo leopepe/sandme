@@ -72,10 +72,10 @@ part of the change; `git diff` does not show them.
 
 Then read, before grading anything:
 
-- every file in `docs/adrs/` whose Status is accepted — these are binding;
+- every file in `docs/adrs/` whose Status is `Accepted` — these are binding;
+- every file in `docs/adrs/` whose Status is `Proposed` — these are **not** binding; cite them
+  only as discussion material, never as authority for a verdict;
 - `AGENTS.md`, and the nearest `AGENTS.md` to each touched file;
-- the governing spec in `docs/specs/` — its **Constraints and dependencies** and **Non-goals**;
-- the siblings in `src/` of every touched module — they are the precedent.
 
 ## 3. Dimensions
 
