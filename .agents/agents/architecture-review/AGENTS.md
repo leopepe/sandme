@@ -24,12 +24,6 @@ This agent composes two sources of truth:
 ### Composition contract
 
 ```
-sandme --agent architecture-review
-  └── delegates gate+scope → review-standards skill (§1, §2)
-  └── delegates A1–A9 evaluation → architecture-review skill (§1–§6)
-  └── produces the report defined by architecture-review skill (§5)
-  └── defers guideline-rule violations → review-standards (Deferred line)
-```
 
 Steps the agent performs:
 
