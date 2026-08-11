@@ -1,0 +1,30 @@
+schema_version: "1.0"
+
+extension:
+  id: "handover"
+  name: "Handover"
+  version: "1.0.0"
+  description: "Structured handover protocol for pausing unfinished work mid-cycle. Adds /speckit.handover.write and a stop hook that blocks ending a session mid-cycle without a handover."
+  author: "sdlc-standards"
+
+requires:
+  speckit_version: ">=0.1.0"
+
+provides:
+  commands:
+    - name: "speckit.handover.write"
+      file: "commands/speckit.handover.write.md"
+      description: "Write a handover document for the current in-flight work."
+
+  hooks:
+    stop:
+      - command: "speckit.handover.write"
+        description: "Blocks session end if in-flight work has no current handover."
+        prompt: "Checking for in-flight work without a handover..."
+        optional: false
+        enabled: true
+
+tags:
+  - "handover"
+  - "context-transfer"
+  - "session-management"
