@@ -19,6 +19,14 @@ pub struct Config {
     /// Port for the HTTP proxy server.
     #[serde(default = "default_proxy_port")]
     pub proxy_port: u16,
+
+    /// Allow GUI applications to write to temporary directories.
+    ///
+    /// When `true`, the sandbox grants write access to `/private/tmp` and
+    /// `/private/var/folders`, which GUI apps need for state and caches.
+    /// Defaults to `false` to preserve the strict security model.
+    #[serde(default)]
+    pub gui_mode: bool,
 }
 
 impl Default for Config {
@@ -26,6 +34,7 @@ impl Default for Config {
         Self {
             shared_paths: vec!["~/".to_string()],
             proxy_port: default_proxy_port(),
+            gui_mode: false,
         }
     }
 }
@@ -79,6 +88,10 @@ fn apply_env(config: &mut Config) {
     {
         config.proxy_port = port;
     }
+
+    if let Ok(gui) = env::var("SANDME_GUI_MODE") {
+        config.gui_mode = gui == "1" || gui.to_lowercase() == "true";
+    }
 }
 
 #[cfg(test)]
@@ -86,6 +99,40 @@ mod tests {
     use super::*;
 
     #[test]
+    #[serial_test::serial]
+    fn keeps_defaults_for_absent_settings() {
+        // Given a HOME directory with no config file
+        // (one test owns HOME to keep the suite parallel-safe;
+        // the calls are safe here: this single test is its only writer)
+        let dir = std::env::temp_dir().join("sandme-test-keeps-defaults");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let original_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &dir);
+            std::env::remove_var("SANDME_SHARED_PATHS");
+            std::env::remove_var("SANDME_PROXY_PORT");
+        }
+
+        // When the configuration is loaded
+        let config = load().unwrap();
+
+        // Then the defaults are returned
+        assert_eq!(config.shared_paths, vec!["~/".to_string()]);
+        assert_eq!(config.proxy_port, 8787);
+
+        // Restore HOME
+        unsafe {
+            match original_home {
+                Some(home) => std::env::set_var("HOME", home),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial]
     fn environment_overrides_previous_values() {
         // Given a config with file-sourced values and override env vars set
         // (one test owns these env vars to keep the suite parallel-safe;
@@ -97,6 +144,7 @@ mod tests {
         let mut config = Config {
             shared_paths: vec!["/file".to_string()],
             proxy_port: 1234,
+            gui_mode: false,
         };
 
         // When the environment is applied

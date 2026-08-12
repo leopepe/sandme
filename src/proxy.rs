@@ -4,7 +4,7 @@
 //! destination without inspecting or filtering it — routing, not policy.
 
 use std::convert::Infallible;
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 
 use http_body_util::{BodyExt, Empty, combinators::BoxBody};
 use hyper::body::{Bytes, Incoming};
@@ -28,6 +28,7 @@ type Body = BoxBody<Bytes, hyper::Error>;
 pub struct Server {
     addr: SocketAddr,
     accept_loop: JoinHandle<()>,
+    accept_loop_v6: Option<JoinHandle<()>>,
 }
 
 impl Server {
@@ -36,33 +37,47 @@ impl Server {
         self.addr
     }
 }
-
 impl Drop for Server {
     fn drop(&mut self) {
         self.accept_loop.abort();
+        if let Some(h) = self.accept_loop_v6.take() {
+            h.abort();
+        }
     }
 }
 
 /// Start the proxy on `port` of the loopback interface.
 ///
-/// Binding happens synchronously so a startup failure reaches the caller
-/// before the command is launched — a sandbox without its proxy is a broken
-/// sandbox, so the whole invocation fails.
 pub fn serve(port: u16) -> Result<Server, SandmeError> {
     let fail = |source| SandmeError::ProxyStartup { port, source };
 
-    let std_listener = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+    // Bind to IPv4 loopback; some HTTP clients (e.g. Zed's reqwest) try
+    // IPv6 ::1 first and don't fall back, so we also bind IPv6 loopback.
+    let v4 = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
         .map_err(&fail)?;
-    std_listener.set_nonblocking(true).map_err(&fail)?;
-    let addr = std_listener.local_addr().map_err(&fail)?;
+    v4.set_nonblocking(true).map_err(&fail)?;
+    let addr = v4.local_addr().map_err(&fail)?;
 
-    let listener = TcpListener::from_std(std_listener).map_err(&fail)?;
-    let accept_loop = tokio::spawn(accept_loop(listener));
-    Ok(Server { addr, accept_loop })
+    let v4_listener = TcpListener::from_std(v4).map_err(&fail)?;
+    let accept_loop = tokio::spawn(run_accept_loop(v4_listener));
+
+    let accept_loop_v6 = std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, port)))
+        .ok()
+        .and_then(|s| {
+            let _ = s.set_nonblocking(true);
+            TcpListener::from_std(s).ok()
+        })
+        .map(|l| tokio::spawn(run_accept_loop(l)));
+
+    Ok(Server {
+        addr,
+        accept_loop,
+        accept_loop_v6,
+    })
 }
 
 /// Accept connections until the listener is aborted.
-async fn accept_loop(listener: TcpListener) {
+async fn run_accept_loop(listener: TcpListener) {
     loop {
         match listener.accept().await {
             Ok((stream, _)) => {
