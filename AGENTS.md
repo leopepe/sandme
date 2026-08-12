@@ -13,10 +13,16 @@ Rust 2024, single binary, macOS only.
 - Format: `cargo fmt`
 - Docs: `cargo doc --no-deps --open`
 
+## Before implementing
+
+- Run the `spec-check` skill. It verifies that a spec exists, is at `Status: Accepted`,
+  has no open questions, and does not contradict existing specs or ADRs. Do not write
+  implementation code until `spec-check` passes.
+
 ## Before finishing any task
 
 - The quality gate passes — `cargo fmt`, `cargo clippy --all-targets`, `cargo build`, `cargo test`,
-  in that order, with no warnings and no failures. Verify by running them, not by asserting it.
+  in that order, with no warnings and no failures. Verify by running them, not by asserting it. Make sure all integration tests are passing.
   `docs/guidelines/code/quality-gates.md` is the authority on the gate, and on running it before
   any review is triggered.
 - The change traces to a requirement ID in `docs/specs/`, or it qualifies as trivial under the

@@ -1,8 +1,9 @@
 # Spec-Driven Development
 
-How work is planned, specified, and implemented in this repository. Follows the
-[OpenSpec](https://github.com/Fission-AI/OpenSpec) model, adapted to this repo's
-`docs/` layout.
+How work is planned, specified, and implemented in this repository. The layout
+and lifecycle are this repo's own; §4 borrows the delta vocabulary
+(ADDED / MODIFIED / REMOVED) from
+[OpenSpec](https://github.com/Fission-AI/OpenSpec).
 
 Audience: humans and code agents. Rules use MUST / MUST NOT / SHOULD.
 
@@ -14,23 +15,44 @@ its implementation. When code and spec disagree, one of them is a bug — say wh
 The workflow is fluid, not waterfall: any artifact may be revised at any stage. What is
 fixed is the **gate** — no implementation without an approved spec.
 
-## 2. Artifact map
+## 2. Artifacts
 
-OpenSpec's artifacts map onto this repo as follows. Do not create an `openspec/`
-directory; use these paths.
+Three artifacts carry this process. The separate proposal, design, and task files
+that spec frameworks such as OpenSpec and spec-kit use — and their `changes/` and
+`archive/` directories — are all folded into the spec file. Do not scaffold those
+layouts; lifecycle here is carried by each spec's `Status` field, not by where
+the file sits.
 
-| OpenSpec concept | This repo | Notes |
+| Artifact | Path | Role |
 | --- | --- | --- |
-| `proposal.md` (why / what changes) | `docs/specs/NNNN-name.md` → Summary, Problem, Goals, Non-goals | One file per change. |
-| `specs/` (requirements + scenarios) | same file → User scenarios, Requirements, Interface contract | Requirements carry stable IDs. |
-| `design.md` (technical approach) | `docs/adrs/NNNN-name.md` | Only when an architectural decision is made. Specs link to ADRs; they never restate them. |
-| `tasks.md` (checklist) | same file → Implementation tasks | Checkboxes, each traceable to requirement IDs. |
-| Living capability spec | Any spec with `Status: Implemented` | The accumulated set of implemented specs is the baseline. |
-| `changes/` (in-flight) | Any spec with `Status: Draft` or `Review` | Status, not location, marks in-flight work. |
-| `archive/` | `Status: Implemented`, plus a Changelog entry | Specs never move or get deleted — IDs are cited by commits, tests and ADRs. |
+| Spec | `docs/specs/NNNN-name.md` | One file per change. WHY and WHAT (Summary, Problem, Goals, Non-goals), requirements with stable IDs (User scenarios, Requirements, Interface contract), the work plan (Implementation tasks, each traceable to requirement IDs), and the proof (Verification). |
+| ADR | `docs/adrs/NNNN-name.md` | A binding architectural decision and its reasoning. Written only when such a decision is made. Specs link to ADRs; they never restate them. |
+| Status | Spec metadata block | `Draft` → `Review` → `Accepted` → `Implemented`, or `Superseded`. Marks where in §3 the spec stands. |
+
+Specs at `Status: Implemented` together describe what the product does today.
+Specs never move and are never deleted — their requirement IDs are cited by
+commits, tests and ADRs.
 
 Templates: `docs/specs/0000-spec-template.md`, `docs/adrs/0000-adr-template.md`. Both are
 mandatory shapes, not suggestions.
+### 2.1 ADR lifecycle
+
+ADRs follow a four-status lifecycle that mirrors the spec workflow:
+
+| Status | Meaning | Binding? |
+| --- | --- | --- |
+| `Proposed` | The decision is being discussed | No — discussion material only |
+| `Accepted` | The decision is approved and binding | Yes — code MUST conform |
+| `Deprecated` | The decision is outdated but still referenced | No — a newer ADR replaces it |
+| `Superseded` | The decision has been replaced | No — cite the replacement |
+
+**Approval gate:** An ADR leaves `Proposed` only when the user explicitly approves it. Before
+approval, no code may cite it as authority. After approval, the ADR is binding and architecture
+reviews check conformance.
+
+**Supersession:** Never edit an `Accepted` ADR in place. When a decision changes, write a new ADR
+that declares `Supersedes: ADR-NNNN`, set the old ADR's status to `Superseded`, and add a note
+pointing to the replacement.
 
 ## 3. Workflow
 
