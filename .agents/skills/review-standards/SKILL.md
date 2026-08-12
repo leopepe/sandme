@@ -18,7 +18,6 @@ guideline file is not a finding — delete it.
 | Is a requirement in `docs/specs/` implemented, or do two specs conflict? | `spec-review` |
 | Does it miss an `NFR-` budget, block the runtime, cost startup time? | `performance-review` — it measures; this skill only checks the rule is followed |
 | Does the code simply not work — wrong output, wrong format, a crash? | No review skill owns runtime correctness. List it under `Defects noticed` at the end of the report, one line each, ungraded |
-| Was the spec ready for implementation before code was written? | `spec-check` — it validates spec readiness **before** implementation begins; this skill catches missing specs **after** the fact via the Traceability table |
 
 Those three cite §1 and §2 below for the gate and the scope; both are canonical here. Keep them
 in step.
