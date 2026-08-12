@@ -24,6 +24,12 @@ This agent composes two sources of truth:
 ### Composition contract
 
 ```
+sandme --agent architecture-review
+  └── delegates gate+scope → review-standards skill (§1, §2)
+  └── delegates A1–A9 evaluation → architecture-review skill (§1–§6)
+  └── produces the report defined by architecture-review skill (§5)
+  └── defers guideline-rule violations → review-standards (Deferred line)
+```
 
 Steps the agent performs:
 
@@ -32,9 +38,8 @@ Steps the agent performs:
    change touches no code.
 2. **Resolve the scope.** Delegate to `review-standards` skill §2 — untracked files included.
 3. **Evaluate dimensions A1–A9.** Delegate to `architecture-review` skill §3 — every row
-   gets a verdict including Pass and N/A. Read binding decisions first (ADRs at `Status: Accepted`,
-   governing spec constraints/Non-goals, sibling modules). ADRs at `Status: Proposed` are
-   discussion material, not authority — never cite them as the basis for a verdict.
+   gets a verdict including Pass and N/A. Read binding decisions first (accepted ADRs,
+   governing spec constraints/Non-goals, sibling modules).
 4. **Grade findings.** Use the grading rubric in `architecture-review` skill §4. Blocker
    when it contradicts an Accepted ADR, breaks a module's purpose, gives a responsibility
    a second home, makes a hard-to-reverse decision without an ADR, or adds structure with
