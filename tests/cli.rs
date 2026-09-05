@@ -301,6 +301,74 @@ fn multi_arg_command_still_works_directly() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn runs_shell_process_substitution() {
+    // Given a shell command that uses process substitution, which bash
+    // implements by handing the child a /dev/fd/N path
+    let dir = workdir("runs-shell-process-substitution");
+    let mut cmd = sandme(&dir);
+    cmd.args(["/bin/bash", "-c", "cat <(echo procsub-works)"]);
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then the substituted output reaches the command, with no denial on stderr
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "procsub-works"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("Operation not permitted"),
+        "the sandbox denied a /dev/fd path: {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn writes_to_the_standard_stream_devices() {
+    // Given a shell command that writes through /dev/stdout and /dev/stderr
+    let dir = workdir("writes-to-the-standard-stream-devices");
+    let mut cmd = sandme(&dir);
+    cmd.args([
+        "/bin/sh",
+        "-c",
+        "echo out-works > /dev/stdout; echo err-works > /dev/stderr",
+    ]);
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then both devices are writable and carry the text to the right stream
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "out-works"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("err-works"),
+        "stderr should carry the text written to /dev/stderr"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reads_the_random_devices() {
+    // Given a command that reads from /dev/urandom
+    let dir = workdir("reads-the-random-devices");
+    let mut cmd = sandme(&dir);
+    cmd.args(["/bin/sh", "-c", "head -c 8 /dev/urandom | wc -c"]);
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then the read succeeds and returns the bytes asked for
+    assert!(output.status.success());
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "8");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Answer one HTTP request with a fixed payload.
 async fn serve_once(listener: tokio::net::TcpListener) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

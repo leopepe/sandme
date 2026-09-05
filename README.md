@@ -34,7 +34,9 @@ sandme cargo test
 ```
 
 **A single quoted operand — routed through `/bin/sh -c`.** Use this when you want shell features:
-pipes, redirection, globbing, `&&`, variable expansion.
+pipes, redirection, globbing, `&&`, variable expansion. Note that `/bin/sh` is bash in
+POSIX mode, so process substitution — `<(…)` — is **not** available in this form; pass an explicit
+shell for that: `sandme /bin/bash -c 'cat <(echo hi)'`.
 
 ```shell
 sandme 'ls -la ~/Workspace | grep rust'
@@ -214,7 +216,7 @@ Read these before trusting the sandbox with something hostile.
 | --- | --- |
 | `shared_paths` defaults to your whole home directory, and `~/Library` is shared read+write regardless of what you configure — including `~/Library/Keychains` and `~/Library/LaunchAgents`. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | `sandme 'zed …'` and other app-bundle CLI wrappers fail in the quoted form; use an absolute path. | [#13](https://github.com/leopepe/sandme/issues/13) |
-| `/dev/fd` is denied, so shell process substitution — `diff <(a) <(b)` — fails inside the sandbox. | [#14](https://github.com/leopepe/sandme/issues/14) |
+| Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | The proxy runs unsandboxed and forwards anywhere without filtering, including host-local and LAN services the sandbox itself blocks. | [#15](https://github.com/leopepe/sandme/issues/15) |
 | `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
 | `sandme`'s own failures exit `1`, which collides with the wrapped command's own status. | [#11](https://github.com/leopepe/sandme/issues/11) |
