@@ -171,24 +171,32 @@ System `vim` in `/usr/bin` needs none of this — `sandme vim <file>` works with
 
 ### Zed
 
-Zed needs `gui_mode`, and — for now — its **absolute path in the multi-operand form**:
+Zed needs `gui_mode`; the command name is enough:
 
 ```shell
 SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="$HOME,/opt/homebrew" \
-  sandme /usr/local/bin/zed ~/Workspace/my-project
+  sandme zed ~/Workspace/my-project
 ```
 
 Zed launches, runs sandboxed, and Ctrl-C in the launching terminal shuts it and the proxy down.
+The quoted form (`sandme 'zed ~/Workspace/my-project'`) and the wrapper's absolute path work the
+same way.
 
-`sandme 'zed ~/Workspace/'` does **not** work today — it fails with
-`error: cannot start app bundle`. `sandme` redirects macOS app-bundle CLI wrappers to the bundle's
-real executable (LaunchServices is blocked inside the sandbox), but that redirect only fires when
-it is handed a resolvable path, which the quoted form and the bare command name never provide.
-Tracked in [#13](https://github.com/leopepe/sandme/issues/13); use the absolute path until it is
-fixed.
+`zed` on `PATH` is a CLI wrapper that asks LaunchServices to open `Zed.app`, and LaunchServices is
+blocked inside the sandbox. `sandme` looks the command up on `PATH`, notices it points into an
+`.app`, and runs the bundle's own executable instead. The same happens for any other IDE shipped
+as a `.app` with a CLI wrapper.
 
-The same applies to any other IDE shipped as a `.app` with a CLI wrapper. Find the path with
-`which <cmd>` and pass it in full.
+The wrapper and the bundle executable do not take the same options — Zed's wrapper has `--wait`,
+`--new` and `--version`, its bundle executable has `--diff` and `--user-data-dir`. Paths work on
+both, so opening a project is unaffected, but wrapper-only flags are not: `sandme zed --version`
+now reports `unexpected argument`, and `EDITOR='zed --wait'` will not block. Pass paths, not
+wrapper flags.
+
+One case is deliberately left alone: a wrapper buried inside a compound shell string
+(`sandme 'cd ~/proj && zed .'`). Only the first word of a quoted command is redirected, because
+working out which word of a compound command is the program means guessing, and a wrong guess
+would run something you did not ask for. Name the app first, or use the multi-operand form.
 
 ### Coding agents
 
@@ -215,7 +223,8 @@ Read these before trusting the sandbox with something hostile.
 | | Issue |
 | --- | --- |
 | `shared_paths` defaults to your whole home directory, and `~/Library` is shared read+write regardless of what you configure — including `~/Library/Keychains` and `~/Library/LaunchAgents`. | [#12](https://github.com/leopepe/sandme/issues/12) |
-| `sandme 'zed …'` and other app-bundle CLI wrappers fail in the quoted form; use an absolute path. | [#13](https://github.com/leopepe/sandme/issues/13) |
+| An app-bundle CLI wrapper is only redirected when it is the first word of the command; inside a compound shell string (`sandme 'cd ~/proj && zed .'`) it is left to the shell and fails. | [#13](https://github.com/leopepe/sandme/issues/13) |
+| Redirecting to the bundle executable loses the wrapper's own flags (`zed --wait`, `--version`) — the two binaries have different CLIs. Paths are unaffected. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | The proxy runs unsandboxed and forwards anywhere without filtering, including host-local and LAN services the sandbox itself blocks. | [#15](https://github.com/leopepe/sandme/issues/15) |
 | `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
