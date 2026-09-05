@@ -89,8 +89,11 @@ sandme [options] [--] <command> [args...]
   pushes word-splitting onto the user and breaks paths containing spaces.
 - The child's own options MUST reach the child: `sandme -- curl -sS https://example.com` passes
   `-sS` to `curl`. Without `--`, the first operand still ends `sandme`'s option parsing.
-- The child MUST NOT be re-parsed, re-quoted, or passed through a shell. Build the argument
-  vector directly.
+- When multiple operands are given, the child MUST NOT be re-parsed, re-quoted, or passed
+  through a shell. Build the argument vector directly.
+- When a single operand is given, it MUST be routed through `/bin/sh -c` so that shell
+  features (pipes, redirections, globbing, variable expansion) work inside the quoted
+  command. This matches the convention of `ssh`, `docker exec`, and `tmux new-session`.
 
 In `clap`, that shape is a trailing var-arg operand that keeps hyphenated values:
 
@@ -122,7 +125,8 @@ struct Cli {
 - [ ] Colour suppressed when not a TTY or when `NO_COLOR` is set.
 - [ ] Child exit status propagated; signal deaths reported as `128+n`.
 - [ ] Every non-zero status documented in the spec's Exit codes table.
-- [ ] The child receives its own arguments unshelled and unquoted.
+- [ ] Multi-operand commands: the child receives its own arguments unshelled and unquoted.
+- [ ] Single-operand commands: the string is routed through `/bin/sh -c`.
 - [ ] Config precedence matches §6 for every setting.
 
 ## 8. Related
