@@ -1,3 +1,8 @@
+---
+name: architecture-review
+description: Use when the user runs /architecture-review, or asks whether a change contradicts an accepted ADR in docs/adrs/, puts code in a module whose purpose does not cover it, breaks a boundary between modules, or introduces an abstraction with one caller and no requirement behind it. Reports findings graded Blocker/Advisory/Note; does not edit code, specs or ADRs.
+---
+
 # Agent: architecture-review
 
 ## Scope

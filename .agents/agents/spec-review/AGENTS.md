@@ -1,3 +1,8 @@
+---
+name: spec-review
+description: Use when the user runs /spec-review, or asks which requirements in docs/specs/ are actually implemented, what is still missing, whether two specs contradict each other, or whether the codebase has drifted from its specs. Audits the whole spec tree against src/ and tests/ in both directions and reports only; does not write missing code or change a spec's Status.
+---
+
 # Agent: spec-review
 
 ## Scope
