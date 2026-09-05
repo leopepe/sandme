@@ -187,6 +187,12 @@ blocked inside the sandbox. `sandme` looks the command up on `PATH`, notices it 
 `.app`, and runs the bundle's own executable instead. The same happens for any other IDE shipped
 as a `.app` with a CLI wrapper.
 
+The wrapper and the bundle executable do not take the same options — Zed's wrapper has `--wait`,
+`--new` and `--version`, its bundle executable has `--diff` and `--user-data-dir`. Paths work on
+both, so opening a project is unaffected, but wrapper-only flags are not: `sandme zed --version`
+now reports `unexpected argument`, and `EDITOR='zed --wait'` will not block. Pass paths, not
+wrapper flags.
+
 One case is deliberately left alone: a wrapper buried inside a compound shell string
 (`sandme 'cd ~/proj && zed .'`). Only the first word of a quoted command is redirected, because
 working out which word of a compound command is the program means guessing, and a wrong guess
@@ -218,6 +224,7 @@ Read these before trusting the sandbox with something hostile.
 | --- | --- |
 | `shared_paths` defaults to your whole home directory, and `~/Library` is shared read+write regardless of what you configure — including `~/Library/Keychains` and `~/Library/LaunchAgents`. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | An app-bundle CLI wrapper is only redirected when it is the first word of the command; inside a compound shell string (`sandme 'cd ~/proj && zed .'`) it is left to the shell and fails. | [#13](https://github.com/leopepe/sandme/issues/13) |
+| Redirecting to the bundle executable loses the wrapper's own flags (`zed --wait`, `--version`) — the two binaries have different CLIs. Paths are unaffected. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | The proxy runs unsandboxed and forwards anywhere without filtering, including host-local and LAN services the sandbox itself blocks. | [#15](https://github.com/leopepe/sandme/issues/15) |
 | `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
