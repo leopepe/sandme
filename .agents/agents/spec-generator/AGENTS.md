@@ -1,3 +1,8 @@
+---
+name: spec-generator
+description: Use when the user provides a user story (what, why, acceptance criteria), runs /spec, or asks to turn a feature request into a formal spec. Writes docs/specs/NNNN-short-name.md from the project template in EARS format at Draft status, then stops for review; does not implement.
+---
+
 # Agent: spec-generator
 
 ## Scope

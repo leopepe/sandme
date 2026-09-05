@@ -1,0 +1,1 @@
+../../.agents/agents/spec-generator/AGENTS.md

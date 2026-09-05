@@ -1,0 +1,1 @@
+../../.agents/agents/architecture-review/AGENTS.md
