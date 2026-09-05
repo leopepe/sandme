@@ -1,0 +1,56 @@
+# sandme configuration — copy to ~/.sandme/config.toml and edit.
+#
+# Every key here has a matching environment variable, and the environment always
+# wins over this file. No key is required; anything you omit takes its default.
+
+# ---------------------------------------------------------------------------
+# shared_paths  (env: SANDME_SHARED_PATHS, comma-separated)
+#
+# Paths the sandboxed command may READ AND WRITE. Everything not listed is
+# denied for both. "~/" expands to your home directory, and symlinks are
+# resolved to their targets before the profile is built.
+#
+# Default: ["~/"] — your entire home directory. That is convenient and it is
+# also the least confining setting there is: it includes ~/.ssh, ~/.aws and
+# every dotfile credential you own. Narrow it when the command is something you
+# do not fully trust.
+#
+# There is no read-only share yet, so a toolchain you add here is writable by
+# the sandboxed process: https://github.com/leopepe/sandme/issues/10
+# ---------------------------------------------------------------------------
+shared_paths = [
+  "~/Workspace",      # your projects — narrow this to a single repo if you can
+  "/opt/homebrew",    # Homebrew on Apple silicon; brew binaries cannot load
+                      # their dylibs without it. Intel Macs use /usr/local,
+                      # which is already readable. Add "/nix" if you use Nix.
+]
+
+# ---------------------------------------------------------------------------
+# proxy_port  (env: SANDME_PROXY_PORT)
+#
+# Loopback port the egress proxy listens on. It is the only network destination
+# the sandbox allows, and HTTP_PROXY/HTTPS_PROXY in the command's environment
+# point at it.
+#
+# Use 0 to take a free port from the OS — necessary if you run several sandme
+# invocations at the same time, since a fixed port collides.
+#
+# Default: 8787
+# ---------------------------------------------------------------------------
+proxy_port = 8787
+
+# ---------------------------------------------------------------------------
+# gui_mode  (env: SANDME_GUI_MODE=1)
+#
+# Also grants read+write to /private/tmp and /private/var/folders.
+#
+# GUI applications and most editors need scratch space there. Without it Neovim
+# starts but reports "tempdir create failed: operation not permitted" and loses
+# swap files, undo history and :terminal; Zed will not launch at all.
+#
+# The grant is not scoped to the launched app — it covers those directories for
+# every application: https://github.com/leopepe/sandme/issues/12
+#
+# Default: false
+# ---------------------------------------------------------------------------
+gui_mode = true
