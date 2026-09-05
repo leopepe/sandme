@@ -1,16 +1,232 @@
-# README
+# sandme
 
-sandme is a command line tool for macos users to start your favorite coding IDE or code Agent sandboxed using MacOS Seatbelt framework and a proxy for external network access.
+`sandme` runs a command — your IDE, your coding agent, or anything else — inside a macOS
+[Seatbelt](https://developer.apple.com/library/archive/documentation/Darwin/Reference/ManPages/man7/sandbox.7.html)
+sandbox, with its network egress routed through a proxy `sandme` starts and stops alongside it.
 
-sandme runs your IDE or code Agent and the proxy in parallel in separate processes.
+Everything is denied by default. The command gets read+write access to the paths you share, and
+one network destination: the proxy. Child processes inherit the same sandbox, so an agent that
+shells out cannot step outside it.
 
-Usage:
+macOS only. `sandme`'s lifetime is the command's lifetime — no daemon, nothing left running.
+
+## Install
 
 ```shell
-sandme <command>
-$ sandme 'zed ~/Workspace/'
+cargo build --release
+cp target/release/sandme /usr/local/bin/
+```
+
+## Usage
+
+```
+sandme <command> [args...]
+```
+
+There are two forms, and the difference matters.
+
+**Multiple operands — direct exec.** The first word is the program, the rest are its arguments,
+passed through unshelled and unquoted. No shell is involved.
+
+```shell
+sandme ls -la ~/Workspace
+sandme cargo test
+```
+
+**A single quoted operand — routed through `/bin/sh -c`.** Use this when you want shell features:
+pipes, redirection, globbing, `&&`, variable expansion.
+
+```shell
+sandme 'ls -la ~/Workspace | grep rust'
+sandme 'cargo build 2>&1 | tee build.log'
+```
+
+Use `--` when the command has its own options that would otherwise be read as `sandme`'s:
+
+```shell
+sandme -- curl -sS https://example.com/
+```
+
+`sandme` exits with the command's own exit status, or `128+n` if it died from signal `n`
+(Ctrl-C gives `130`). Its own failures — unreadable config, proxy could not bind — print a
+`sandme: ` message and exit `1`.
+
+## Configuration
+
+`sandme` reads `~/.sandme/config.toml`. Every key has a matching environment variable, and the
+environment always wins.
+
+| Key | Environment variable | Type | Default | What it does |
+| --- | --- | --- | --- | --- |
+| `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` | Paths the sandboxed command may **read and write**. `~/` expands to your home directory; symlinks are resolved. |
+| `proxy_port` | `SANDME_PROXY_PORT` | integer | `8787` | Loopback port the egress proxy listens on. `0` picks a free port — use it when running several `sandme` invocations at once. |
+| `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `/private/tmp` and `/private/var/folders`. GUI apps and most editors need this for their scratch space. |
+
+No config file is required — without one you get the defaults. A malformed file is reported
+rather than ignored.
+
+> **The default shares your whole home directory.** `shared_paths` defaults to `["~/"]`, so out of
+> the box the sandboxed command can read and write everything under `~`, including `~/.ssh` and
+> `~/.aws`. If you are sandboxing something you do not fully trust, narrow it to the project you
+> are working on. See [Known limitations](#known-limitations).
+
+### A starting config
+
+```toml
+# ~/.sandme/config.toml
+shared_paths = [
+  "~/Workspace",      # your projects — narrow this to taste
+  "/opt/homebrew",    # Homebrew toolchain (Apple silicon; use /usr/local on Intel)
+]
+proxy_port = 8787
+gui_mode = true       # editors need scratch space
+```
+
+There is a fuller, commented version in [`examples/config.toml`](examples/config.toml).
+
+## What the sandbox allows
+
+**Filesystem.** Read-only access to the system runtime — `/usr`, `/bin`, `/sbin`, `/System`,
+`/Library`, `/Applications`, `/private/etc`. Read+write to everything in `shared_paths`, plus
+`~/Library` and (with `gui_mode`) the temp directories. Everything else is denied for both reading
+and writing.
+
+**Network.** TCP to the proxy port, and nothing else. Direct HTTP, DNS, raw sockets, ICMP and
+listening sockets are all denied. `sandme` sets `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase
+forms in the command's environment, so ordinary HTTP clients use the proxy without you configuring
+anything. HTTPS works through `CONNECT`.
+
+The proxy forwards traffic to its original destination without inspecting or filtering it. It
+mediates the route, not the policy.
+
+## Recipes
+
+Each of these is verified against the current build on macOS 26 (Apple silicon).
+
+### Simple commands
+
+The defaults are enough:
+
+```shell
+sandme ls -la ~/Workspace
+sandme -- curl -sS https://example.com/
+sandme 'echo hello-world | tr - " "'
+```
+
+### Anything installed by Homebrew
+
+Homebrew lives in `/opt/homebrew` on Apple silicon, which is **not** in the base read-only set. A
+brew-installed binary cannot load its own dylibs until you share that prefix:
+
+```shell
+# fails: dyld: Library not loaded: /opt/homebrew/opt/pcre2/lib/libpcre2-8.0.dylib
+sandme 'fish -c "echo hi"'
+
+# works
+SANDME_SHARED_PATHS="$HOME,/opt/homebrew" sandme 'fish -c "echo hi"'
+```
+
+Put `/opt/homebrew` in `shared_paths` once and forget about it. On Intel Macs Homebrew uses
+`/usr/local`, which is already readable via `/usr`. If you use Nix, add `/nix` too.
+
+Be aware this grants **write** access to your Homebrew prefix — `shared_paths` has no read-only
+mode yet ([#10](https://github.com/leopepe/sandme/issues/10)).
+
+### Neovim
+
+Neovim needs its Homebrew prefix, its own config and state under `~`, and scratch space:
+
+```toml
+# ~/.sandme/config.toml
+shared_paths = ["~/", "/opt/homebrew"]
+gui_mode = true
 ```
 
 ```shell
-$ sandme 'fish'
+sandme nvim ~/Workspace/my-project
 ```
+
+Or without a config file:
+
+```shell
+SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="$HOME,/opt/homebrew" \
+  sandme nvim ~/Workspace/my-project
+```
+
+Without `gui_mode` Neovim starts but prints `tempdir create failed: operation not permitted` and
+loses swap files, undo history and `:terminal`.
+
+To confine it to one project instead of all of `~`, share the project plus Neovim's own
+directories:
+
+```shell
+SANDME_GUI_MODE=1 \
+SANDME_SHARED_PATHS="~/Workspace/my-project,/opt/homebrew,~/.config/nvim,~/.local/share/nvim,~/.local/state/nvim,~/.cache/nvim" \
+  sandme nvim ~/Workspace/my-project
+```
+
+System `vim` in `/usr/bin` needs none of this — `sandme vim <file>` works with the defaults.
+
+### Zed
+
+Zed needs `gui_mode`, and — for now — its **absolute path in the multi-operand form**:
+
+```shell
+SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="$HOME,/opt/homebrew" \
+  sandme /usr/local/bin/zed ~/Workspace/my-project
+```
+
+Zed launches, runs sandboxed, and Ctrl-C in the launching terminal shuts it and the proxy down.
+
+`sandme 'zed ~/Workspace/'` does **not** work today — it fails with
+`error: cannot start app bundle`. `sandme` redirects macOS app-bundle CLI wrappers to the bundle's
+real executable (LaunchServices is blocked inside the sandbox), but that redirect only fires when
+it is handed a resolvable path, which the quoted form and the bare command name never provide.
+Tracked in [#13](https://github.com/leopepe/sandme/issues/13); use the absolute path until it is
+fixed.
+
+The same applies to any other IDE shipped as a `.app` with a CLI wrapper. Find the path with
+`which <cmd>` and pass it in full.
+
+### Coding agents
+
+```shell
+SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="~/Workspace/my-project,/opt/homebrew" \
+  sandme claude
+```
+
+The agent's HTTP calls go through the proxy, and it cannot read outside the project — with the
+caveats in the next section.
+
+### Several invocations at once
+
+The default port `8787` collides. Use an ephemeral port:
+
+```shell
+SANDME_PROXY_PORT=0 sandme cargo test
+```
+
+## Known limitations
+
+Read these before trusting the sandbox with something hostile.
+
+| | Issue |
+| --- | --- |
+| `shared_paths` defaults to your whole home directory, and `~/Library` is shared read+write regardless of what you configure — including `~/Library/Keychains` and `~/Library/LaunchAgents`. | [#12](https://github.com/leopepe/sandme/issues/12) |
+| `sandme 'zed …'` and other app-bundle CLI wrappers fail in the quoted form; use an absolute path. | [#13](https://github.com/leopepe/sandme/issues/13) |
+| `/dev/fd` is denied, so shell process substitution — `diff <(a) <(b)` — fails inside the sandbox. | [#14](https://github.com/leopepe/sandme/issues/14) |
+| The proxy runs unsandboxed and forwards anywhere without filtering, including host-local and LAN services the sandbox itself blocks. | [#15](https://github.com/leopepe/sandme/issues/15) |
+| `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
+| `sandme`'s own failures exit `1`, which collides with the wrapped command's own status. | [#11](https://github.com/leopepe/sandme/issues/11) |
+
+## Development
+
+```shell
+cargo build            # build
+cargo test             # unit + integration tests
+cargo clippy --all-targets
+cargo fmt
+```
+
+`AGENTS.md` describes the working agreement; `docs/specs/` holds the requirements, `docs/adrs/`
+the structural decisions, and `docs/guidelines/` the rules that apply across changes.
