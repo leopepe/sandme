@@ -61,13 +61,17 @@ pub fn serve(port: u16) -> Result<Server, SandmeError> {
     let v4_listener = TcpListener::from_std(v4).map_err(&fail)?;
     let accept_loop = tokio::spawn(run_accept_loop(v4_listener));
 
-    let accept_loop_v6 = std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, port)))
-        .ok()
-        .and_then(|s| {
-            let _ = s.set_nonblocking(true);
-            TcpListener::from_std(s).ok()
-        })
-        .map(|l| tokio::spawn(run_accept_loop(l)));
+    // Bind IPv6 to the port IPv4 actually got, not to `port`: with `port` 0 the
+    // OS hands the second bind a different ephemeral port, and only `addr` is
+    // published to the child and allowed by the sandbox profile.
+    let accept_loop_v6 =
+        std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())))
+            .ok()
+            .and_then(|s| {
+                let _ = s.set_nonblocking(true);
+                TcpListener::from_std(s).ok()
+            })
+            .map(|l| tokio::spawn(run_accept_loop(l)));
 
     Ok(Server {
         addr,
@@ -155,4 +159,28 @@ fn response_with(status: StatusCode) -> Response<Body> {
     let mut response = Response::new(body);
     *response.status_mut() = status;
     response
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn serves_both_loopback_families_on_the_published_port() {
+        // Given the proxy started on an ephemeral port
+        let server = serve(0).expect("loopback bind on an ephemeral port cannot fail");
+        let port = server.addr().port();
+
+        // Then both loopback families answer on the port the child is told
+        // about — the IPv6 listener is not off on a port of its own
+        assert_ne!(port, 0, "an ephemeral bind resolves to a real port");
+        assert!(
+            std::net::TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok(),
+            "IPv4 loopback should accept on {port}"
+        );
+        assert!(
+            std::net::TcpStream::connect(SocketAddr::from((Ipv6Addr::LOCALHOST, port))).is_ok(),
+            "IPv6 loopback should accept on {port}"
+        );
+    }
 }
