@@ -13,6 +13,15 @@ use crate::error::SandmeError;
 /// mechanics macOS needs to start, read-only access to the system runtime,
 /// read-write access to the shared paths, and network egress to the proxy
 /// and nothing else (FR-006).
+///
+/// `/dev/fd` sits with the other device rules because shells implement
+/// process substitution — `cat <(echo hi)` — by handing the child a
+/// `/dev/fd/N` path. Such a path only names a descriptor the process already
+/// holds, so allowing it grants no access the process did not already have:
+/// it is not a widening of the sandbox the way a path grant is. `/dev/stdin`,
+/// `/dev/stdout` and `/dev/stderr` are symlinks into `/dev/fd` and need no
+/// rule of their own. `/dev/random` and `/dev/urandom` are the same generator
+/// on macOS, are read-only here, and are denied without an explicit rule.
 pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
     let mut sbpl = String::from(
         "(version 1)\n\
@@ -33,6 +42,8 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow file-read* file-write* (subpath \"/dev/pts\"))\n\
          (allow file-read* file-write* (literal \"/dev/tty\") (literal \"/dev/null\"))\n\
          (allow file-write* (literal \"/dev/null\"))\n\
+         (allow file-read* file-write* (subpath \"/dev/fd\"))\n\
+         (allow file-read* (literal \"/dev/random\") (literal \"/dev/urandom\"))\n\
          (allow file-read* (literal \"/\"))\n\
          (allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/System\") (subpath \"/Library\") (subpath \"/Applications\"))\n\
          (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
@@ -267,5 +278,35 @@ mod tests {
         let profile = generate_profile(&config, proxy);
         assert!(profile.contains("/private/tmp"));
         assert!(profile.contains("/private/var/folders"));
+    }
+
+    #[test]
+    fn grants_dev_fd_read_write() {
+        // Given the base profile, with no shared paths
+        let profile = generate_profile(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        // Then /dev/fd is readable and writable, so the `/dev/fd/N` paths a
+        // shell hands to process substitution resolve
+        assert!(profile.contains("(allow file-read* file-write* (subpath \"/dev/fd\"))"));
+    }
+
+    #[test]
+    fn grants_the_random_devices_read_only() {
+        // Given the base profile, with no shared paths
+        let profile = generate_profile(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        // Then the random devices are readable, and nothing grants a write
+        assert!(
+            profile.contains(
+                "(allow file-read* (literal \"/dev/random\") (literal \"/dev/urandom\"))"
+            )
+        );
+        assert!(!profile.contains("file-write* (literal \"/dev/urandom\")"));
     }
 }
