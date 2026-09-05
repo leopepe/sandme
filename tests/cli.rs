@@ -13,12 +13,16 @@ fn workdir(name: &str) -> PathBuf {
     dir
 }
 
-/// The sandme binary under test, isolated from the developer's real config
-/// and given its own proxy port so parallel tests do not collide.
+/// The sandme binary under test, isolated from the developer's real config.
+///
+/// `SANDME_PROXY_PORT=0` lets the OS pick the port at bind time, so parallel
+/// tests cannot collide: there is no window between choosing a port and
+/// binding it for another test to slip into. Only a test that has to know the
+/// port up front needs `free_port`.
 fn sandme(workdir: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
     cmd.env("HOME", workdir)
-        .env("SANDME_PROXY_PORT", free_port().to_string())
+        .env("SANDME_PROXY_PORT", "0")
         .env_remove("SANDME_SHARED_PATHS")
         .current_dir(workdir);
     cmd
@@ -148,30 +152,10 @@ fn denies_subprocess_access_outside_shared_paths() {
 fn proxy_lifetime_follows_command() {
     // Given a sandme invocation running a long-lived command
     let dir = workdir("proxy-lifetime-follows-command");
-    let port = free_port();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
-    cmd.env("HOME", &dir)
-        .env("SANDME_PROXY_PORT", port.to_string())
-        .env_remove("SANDME_SHARED_PATHS")
-        .current_dir(&dir)
-        .args(["sleep", "2"]);
 
     // When the command is started
-    let mut child = cmd.spawn().unwrap();
-
     // Then the proxy port is listening while the command runs (FR-005)
-    // Poll with timeout instead of fixed sleep to avoid flakiness under load.
-    let proxy_addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-    let mut proxy_alive = false;
-    while std::time::Instant::now() < deadline {
-        if std::net::TcpStream::connect(proxy_addr).is_ok() {
-            proxy_alive = true;
-            break;
-        }
-        std::thread::sleep(std::time::Duration::from_millis(50));
-    }
-    assert!(proxy_alive, "proxy should be listening while command runs");
+    let (mut child, port) = start_with_live_proxy(&dir, &["sleep", "2"]);
 
     // And when the command exits
     let status = child.wait().unwrap();
@@ -183,6 +167,42 @@ fn proxy_lifetime_follows_command() {
         std::net::TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok();
     assert!(!proxy_alive_after, "proxy should stop after command exits");
     let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Start sandme on a port this test can probe, and return once its proxy
+/// answers there.
+///
+/// This is the one case that cannot use `SANDME_PROXY_PORT=0`: the test has
+/// to know the port to check that the proxy stops. `free_port` can lose its
+/// port to another process before sandme binds it, which shows up as sandme
+/// exiting 1 before the child ever runs — so a lost race is retried with a
+/// fresh port rather than failing a test that is about proxy lifetime.
+fn start_with_live_proxy(dir: &Path, args: &[&str]) -> (std::process::Child, u16) {
+    for _ in 0..5 {
+        let port = free_port();
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
+        cmd.env("HOME", dir)
+            .env("SANDME_PROXY_PORT", port.to_string())
+            .env_remove("SANDME_SHARED_PATHS")
+            .current_dir(dir)
+            .args(args);
+        let mut child = cmd.spawn().unwrap();
+
+        // Poll rather than sleep a fixed span, so a loaded machine is slow
+        // here instead of flaky.
+        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while std::time::Instant::now() < deadline {
+            if std::net::TcpStream::connect(addr).is_ok() {
+                return (child, port);
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
+
+        let _ = child.kill();
+        let _ = child.wait();
+    }
+    panic!("sandme's proxy never came up: five ports in a row were taken");
 }
 
 #[test]
@@ -407,7 +427,7 @@ fn reads_config_file_from_default_path() {
     // When sandme runs without SANDME_SHARED_PATHS, the config file is read
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
     cmd.env("HOME", &dir)
-        .env("SANDME_PROXY_PORT", free_port().to_string())
+        .env("SANDME_PROXY_PORT", "0")
         .env_remove("SANDME_SHARED_PATHS")
         .current_dir(&dir)
         .args(["touch", &shared.join("proof").display().to_string()]);
@@ -420,7 +440,11 @@ fn reads_config_file_from_default_path() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Borrow a port from the OS and give it back — small race, test-only.
+/// Borrow a port from the OS and give it back.
+///
+/// Inherently racy — another process can take the port before the caller
+/// binds it — so this is only for a test that must know the port in advance.
+/// Everything else passes `SANDME_PROXY_PORT=0` and lets sandme bind directly.
 fn free_port() -> u16 {
     std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
         .unwrap()
