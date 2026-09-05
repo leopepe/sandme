@@ -205,6 +205,102 @@ fn no_manual_proxy_configuration_needed() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn single_string_command_runs_through_shell() {
+    // Given a single quoted string with arguments
+    let dir = workdir("single-string-command-runs-through-shell");
+    let mut cmd = sandme(&dir);
+    cmd.arg("echo sandme-shell-works");
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then the shell interpreted it and the output passes through
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "sandme-shell-works"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn single_string_command_supports_pipes() {
+    // Given a single quoted string with a pipe
+    let dir = workdir("single-string-command-supports-pipes");
+    let mut cmd = sandme(&dir);
+    cmd.arg("echo hello-world | tr '-' ' '");
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then the pipe was interpreted by the shell
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "hello world"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn single_string_command_supports_redirection() {
+    // Given a single quoted string with output redirection
+    let dir = workdir("single-string-command-supports-redirection");
+    let output_file = dir.join("redirected.txt");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_SHARED_PATHS", &dir).arg(format!(
+        "echo redirected-content > {}",
+        output_file.display()
+    ));
+
+    // When it is run
+    let status = cmd.status().unwrap();
+
+    // Then the redirection worked and the file was created
+    assert!(status.success());
+    assert!(output_file.exists());
+    assert_eq!(
+        std::fs::read_to_string(&output_file).unwrap().trim_end(),
+        "redirected-content"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn single_string_command_propagates_exit_code() {
+    // Given a single quoted string that exits with a specific code
+    let dir = workdir("single-string-command-propagates-exit-code");
+    let mut cmd = sandme(&dir);
+    cmd.arg("exit 42");
+
+    // When it is run
+    let status = cmd.status().unwrap();
+
+    // Then the exit code propagates
+    assert_eq!(status.code(), Some(42));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn multi_arg_command_still_works_directly() {
+    // Given multiple arguments (already split by the caller's shell)
+    let dir = workdir("multi-arg-command-still-works-directly");
+    let mut cmd = sandme(&dir);
+    cmd.args(["echo", "multi-arg-works"]);
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then direct exec still works (no shell involved)
+    assert!(output.status.success());
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "multi-arg-works"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Answer one HTTP request with a fixed payload.
 async fn serve_once(listener: tokio::net::TcpListener) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

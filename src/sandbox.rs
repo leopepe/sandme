@@ -133,25 +133,44 @@ fn resolve_app_bundle_executable(program: &str) -> String {
 
 /// Execute a command under the Seatbelt sandbox and wait for it.
 ///
-/// The operands reach the child unshelled and unquoted: `program` is
-/// executed directly with `args` (posix.md §5). The profile is handed to
-/// `sandbox-exec -p`, so nothing sensitive touches a temp file. The
-/// command's egress is wired to the proxy without any configuration of its
-/// own (FR-006): `HTTP_PROXY`/`HTTPS_PROXY` point at `proxy`, and the
-/// profile allows no other network destination. Ctrl-C kills the child so
-/// sandme can shut down with it (T-007).
+/// When the user passes multiple operands (`sandme ls -ltra ./`), each
+/// reaches the child unshelled and unquoted: the first is the program,
+/// the rest are its arguments (posix.md §5).
+///
+/// When the user passes a single operand (`sandme 'ls -ltra ./'`), it is
+/// treated as a shell command string and routed through `/bin/sh -c`.
+/// This enables shell features — pipes, redirections, globbing, variable
+/// expansion — inside the quoted command. This matches the convention of
+/// `ssh`, `docker exec`, and `tmux new-session`.
+///
+/// The profile is handed to `sandbox-exec -p`, so nothing sensitive
+/// touches a temp file. The command's egress is wired to the proxy
+/// without any configuration of its own (FR-006): `HTTP_PROXY`/
+/// `HTTPS_PROXY` point at `proxy`, and the profile allows no other
+/// network destination. Ctrl-C kills the child so sandme can shut down
+/// with it (T-007).
 pub async fn run(
     config: &Config,
     proxy: SocketAddr,
     command: &[String],
 ) -> Result<ExitStatus, SandmeError> {
     // clap's required trailing operand guarantees at least one word.
-    let (program, args) = command
-        .split_first()
-        .expect("clap requires at least one operand");
+    assert!(!command.is_empty(), "clap requires at least one operand");
+
+    // Single-argument: route through /bin/sh -c so shell features work.
+    // Multi-argument: direct exec, first word is the program.
+    let (program, args): (String, Vec<String>) = if command.len() == 1 {
+        (
+            "/bin/sh".to_string(),
+            vec!["-c".to_string(), command[0].clone()],
+        )
+    } else {
+        let (prog, rest) = command.split_first().unwrap();
+        (prog.clone(), rest.to_vec())
+    };
 
     // Resolve app bundle CLI wrappers to their actual executables
-    let resolved_program = resolve_app_bundle_executable(program);
+    let resolved_program = resolve_app_bundle_executable(&program);
 
     let profile = generate_profile(config, proxy);
     let proxy_url = format!("http://{proxy}");
@@ -160,7 +179,7 @@ pub async fn run(
         .arg("-p")
         .arg(&profile)
         .arg(&resolved_program)
-        .args(args)
+        .args(&args)
         .env("HTTP_PROXY", &proxy_url)
         .env("HTTPS_PROXY", &proxy_url)
         .env("http_proxy", &proxy_url)

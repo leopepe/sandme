@@ -40,8 +40,10 @@ native desktop experience of an IDE.
   traffic be routed through it. Any policy layer is a later spec.
 - A GUI, daemon, or persistent service. sandme's lifetime is the lifetime of the
   command it launches.
-- Shell interpretation of the command line: the operands reach the command
-  unchanged; pipes, redirection, globbing and variable expansion are out of scope.
+- Shell interpretation of multi-argument commands: when the user passes
+  multiple operands (`sandme ls -ltra ./`), they reach the command unchanged.
+  A single quoted operand (`sandme 'ls | grep foo'`) is routed through
+  `/bin/sh -c` so shell features work inside it.
 
 ## User scenarios *(mandatory)*
 
@@ -156,7 +158,7 @@ them per invocation.
 
 | Flag / argument | Type | Default | Description |
 | --- | --- | --- | --- |
-| `<command> [args...]` | operands | required | The command to run sandboxed, with its arguments, e.g. `sandme zed ~/Workspace/`. The operands are passed to the command unshelled and unquoted — the child receives its own argument vector. `--` terminates sandme's option parsing, so the child's own options reach it: `sandme -- curl -sS https://example.com/`. |
+| `<command> [args...]` | operands | required | The command to run sandboxed. When multiple operands are given (`sandme zed ~/Workspace/`), they are passed to the child unshelled and unquoted — the child receives its own argument vector. When a single operand is given (`sandme 'ls \| grep foo'`), it is routed through `/bin/sh -c` so shell features (pipes, redirections, globbing) work inside it. `--` terminates sandme's option parsing, so the child's own options reach it: `sandme -- curl -sS https://example.com/`. |
 
 The PoC exposes no other flags; shared paths are configured through the config file or
 environment only.
@@ -267,3 +269,4 @@ None — all resolved; see the 2026-08-08 changelog entry.
 | 2026-08-02 | Converted the original free-form project notes into the spec template. No requirements added or removed; gaps recorded as open questions. |
 | 2026-08-08 | PoC implemented (T-001…T-007); status → Accepted. All open questions resolved in the body; FR-005 records the proxy as a concurrent task; NFR-003 withdrawn. |
 | 2026-08-08 | Interface aligned with `docs/guidelines/architecture/posix.md`: the command is operands, not a quoted string (`shell-words` removed); env vars use the `SANDME_` prefix; signal deaths exit `128+n`; stdout carries only the child's output; the profile reaches `sandbox-exec` via `-p`; the config file is parsed with serde and malformed input is reported. |
+| 2026-08-08 | Single-operand commands (`sandme 'ls \| grep foo'`) are routed through `/bin/sh -c` so shell features (pipes, redirections, globbing) work. Multi-operand commands remain direct-exec. See [issue #6](https://github.com/leopepe/sandme/issues/6). |
