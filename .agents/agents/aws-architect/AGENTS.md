@@ -1,3 +1,8 @@
+---
+name: aws-architect
+description: Use when the user asks whether an ADR in docs/adrs/ or an IaC file (CloudFormation, Terraform, CDK) proposes AWS infrastructure that complies with the AWS Well-Architected Framework's five pillars. Only applies to AWS resources; explicitly skips non-AWS changes.
+---
+
 # Agent: aws-architect
 
 ## Scope

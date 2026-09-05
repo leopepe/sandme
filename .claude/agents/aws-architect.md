@@ -1,0 +1,1 @@
+../../.agents/agents/aws-architect/AGENTS.md
