@@ -4,6 +4,7 @@ use std::fmt::Write;
 use std::net::SocketAddr;
 use std::process::ExitStatus;
 
+use crate::app_bundle;
 use crate::config::Config;
 use crate::error::SandmeError;
 
@@ -49,6 +50,21 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
     );
 
+    append_writable_grants(&mut sbpl, config);
+
+    let _ = writeln!(
+        sbpl,
+        "(allow network-outbound (remote ip \"localhost:{}\"))",
+        proxy.port()
+    );
+    sbpl
+}
+
+/// Append the read-write grants the configuration asks for (FR-004).
+///
+/// These are the only rules in the profile that vary per invocation, which is
+/// why they live apart from the fixed template above.
+fn append_writable_grants(sbpl: &mut String, config: &Config) {
     for path in &config.shared_paths {
         let expanded = expand_path(path);
         let _ = writeln!(
@@ -76,13 +92,6 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
             "(allow file-read* file-write* (subpath \"/private/var/folders\"))"
         );
     }
-
-    let _ = writeln!(
-        sbpl,
-        "(allow network-outbound (remote ip \"localhost:{}\"))",
-        proxy.port()
-    );
-    sbpl
 }
 
 /// Expand a path starting with ~ to the home directory, and resolve
@@ -98,48 +107,50 @@ fn expand_path(path: &str) -> String {
     std::fs::canonicalize(&expanded).map_or(expanded, |resolved| resolved.display().to_string())
 }
 
-/// Resolve an app bundle CLI wrapper to its actual executable.
+/// The shell command string handed to `/bin/sh -c`, with an app-bundle CLI
+/// wrapper at its head redirected to the bundle's own executable.
 ///
-/// macOS app bundles often provide CLI wrappers (e.g., `/usr/local/bin/zed`)
-/// that use LaunchServices to open the app. Sandboxed processes cannot use
-/// LaunchServices for arbitrary document types, so we detect these wrappers
-/// and redirect to the bundle's main executable instead.
-fn resolve_app_bundle_executable(program: &str) -> String {
-    // Resolve symlinks to get the actual path
-    let resolved = std::fs::canonicalize(program)
-        .map(|p| p.to_string_lossy().into_owned())
-        .unwrap_or_else(|_| program.to_string());
+/// Only the first word is touched, and only when nothing in it can make it
+/// anything other than the command word: a shell metacharacter there would
+/// mean an assignment (`FOO=1 zed .`), a redirection (`>log zed .`) or a
+/// compound command (`(zed .)`), and rewriting the wrong token is worse than
+/// not rewriting at all. What survives that filter is a literal word, which
+/// POSIX `sh` can only read as the command word — and it is rewritten only
+/// when it names a real app bundle, so a shell keyword (`if`, `time`) falls
+/// through untouched. Everything after the first word keeps its shell
+/// meaning, so `zed ~/Workspace/` still gets its tilde expanded.
+///
+/// A wrapper further inside the string — `cd /x && zed .` — is left to the
+/// shell: finding it would mean parsing the string, and a wrong guess would
+/// silently run something the user never asked for (issue #13).
+fn redirect_shell_command(command: &str) -> String {
+    let trimmed = command.trim_start();
+    let (head, arguments) = trimmed
+        .split_once(char::is_whitespace)
+        .unwrap_or((trimmed, ""));
 
-    // Check if the resolved path is inside an app bundle
-    if let Some(contents_idx) = resolved.find(".app/Contents/") {
-        let bundle_path = &resolved[..contents_idx + 4]; // Include ".app"
-        let plist_path = format!("{bundle_path}/Contents/Info.plist");
-
-        // Try to read the bundle identifier from Info.plist
-        if let Ok(plist_content) = std::fs::read_to_string(&plist_path) {
-            // Simple XML parsing for CFBundleExecutable
-            if let Some(start) = plist_content.find("<key>CFBundleExecutable</key>") {
-                let after_key = &plist_content[start..];
-                if let Some(value_start) = after_key.find("<string>") {
-                    let value_after = &after_key[value_start + 8..];
-                    if let Some(value_end) = value_after.find("</string>") {
-                        let executable_name = &value_after[..value_end];
-                        let main_executable =
-                            format!("{bundle_path}/Contents/MacOS/{executable_name}");
-
-                        // If the main executable exists and differs from the resolved program, use it
-                        if std::path::Path::new(&main_executable).exists()
-                            && main_executable != resolved
-                        {
-                            return main_executable;
-                        }
-                    }
-                }
-            }
-        }
+    if !is_literal_word(head) {
+        return command.to_string();
     }
+    let Some(main) = app_bundle::main_executable(head) else {
+        return command.to_string();
+    };
+    format!("{} {arguments}", single_quoted(&main))
+}
 
-    resolved
+/// Whether `word` carries no shell meaning beyond naming something.
+fn is_literal_word(word: &str) -> bool {
+    const SHELL_SPECIAL: [char; 22] = [
+        '|', '&', ';', '<', '>', '(', ')', '$', '`', '\\', '"', '\'', '*', '?', '[', ']', '{', '}',
+        '~', '!', '=', '#',
+    ];
+
+    !word.is_empty() && !word.contains(SHELL_SPECIAL)
+}
+
+/// Quote `text` so the shell reads it as one literal word.
+fn single_quoted(text: &str) -> String {
+    format!("'{}'", text.replace('\'', r"'\''"))
 }
 
 /// Execute a command under the Seatbelt sandbox and wait for it.
@@ -153,6 +164,10 @@ fn resolve_app_bundle_executable(program: &str) -> String {
 /// This enables shell features — pipes, redirections, globbing, variable
 /// expansion — inside the quoted command. This matches the convention of
 /// `ssh`, `docker exec`, and `tmux new-session`.
+///
+/// Either way the program is put through [`app_bundle::main_executable`]
+/// first, so an IDE named by its CLI wrapper starts inside the sandbox
+/// instead of asking a blocked `LaunchServices` to open it.
 ///
 /// The profile is handed to `sandbox-exec -p`, so nothing sensitive
 /// touches a temp file. The command's egress is wired to the proxy
@@ -173,15 +188,13 @@ pub async fn run(
     let (program, args): (String, Vec<String>) = if command.len() == 1 {
         (
             "/bin/sh".to_string(),
-            vec!["-c".to_string(), command[0].clone()],
+            vec!["-c".to_string(), redirect_shell_command(&command[0])],
         )
     } else {
-        let (prog, rest) = command.split_first().unwrap();
-        (prog.clone(), rest.to_vec())
+        let (wrapper, rest) = command.split_first().unwrap();
+        let program = app_bundle::main_executable(wrapper).unwrap_or_else(|| wrapper.clone());
+        (program, rest.to_vec())
     };
-
-    // Resolve app bundle CLI wrappers to their actual executables
-    let resolved_program = resolve_app_bundle_executable(&program);
 
     let profile = generate_profile(config, proxy);
     let proxy_url = format!("http://{proxy}");
@@ -189,7 +202,7 @@ pub async fn run(
     let mut child = tokio::process::Command::new("sandbox-exec")
         .arg("-p")
         .arg(&profile)
-        .arg(&resolved_program)
+        .arg(&program)
         .args(&args)
         .env("HTTP_PROXY", &proxy_url)
         .env("HTTPS_PROXY", &proxy_url)
@@ -278,6 +291,39 @@ mod tests {
         let profile = generate_profile(&config, proxy);
         assert!(profile.contains("/private/tmp"));
         assert!(profile.contains("/private/var/folders"));
+    }
+
+    #[test]
+    fn leaves_a_shell_command_alone_when_its_head_is_not_a_bundle() {
+        // A name nothing on PATH answers to: there is no bundle to redirect to,
+        // so the string reaches /bin/sh exactly as the user typed it.
+        let command = "sandme-no-such-command --flag ~/Workspace/";
+        assert_eq!(redirect_shell_command(command), command);
+    }
+
+    #[test]
+    fn leaves_a_shell_command_alone_when_its_head_is_not_the_program() {
+        // Each head here is an assignment, a redirection, a compound command or
+        // a quoted word — never something sandme may rewrite.
+        for command in [
+            "FOO=1 zed .",
+            ">log zed .",
+            "(zed .)",
+            "'zed' .",
+            "$EDITOR .",
+            "",
+        ] {
+            assert_eq!(redirect_shell_command(command), command);
+        }
+    }
+
+    #[test]
+    fn quotes_a_redirected_program_for_the_shell() {
+        assert_eq!(
+            single_quoted("/Applications/Visual Studio Code.app/Contents/MacOS/Electron"),
+            "'/Applications/Visual Studio Code.app/Contents/MacOS/Electron'"
+        );
+        assert_eq!(single_quoted("/tmp/it's here"), r"'/tmp/it'\''s here'");
     }
 
     #[test]
