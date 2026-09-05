@@ -1,6 +1,7 @@
 //! sandme — run a coding IDE or code agent inside a macOS Seatbelt sandbox,
 //! with its network egress routed through a proxy sandme manages.
 
+mod app_bundle;
 mod config;
 mod error;
 mod proxy;

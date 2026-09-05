@@ -389,6 +389,140 @@ fn reads_the_random_devices() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Build a stand-in macOS app bundle and put its CLI wrapper on a `PATH`
+/// directory of its own; returns the value to use as `PATH`.
+///
+/// The bundle imitates the shape every macOS IDE ships — a wrapper
+/// (`Contents/MacOS/cli`, symlinked onto `PATH` the way `/usr/local/bin/zed`
+/// is) next to the real executable the `Info.plist` names. A fake keeps these
+/// tests runnable on a machine that has no such IDE installed: what is under
+/// test is sandme's redirect, not the IDE.
+///
+/// `executable_name` is what the bundle's `Info.plist` names; `None` writes no
+/// `Info.plist` at all, standing in for a bundle sandme cannot read through.
+fn fake_app_bundle(dir: &Path, executable_name: Option<&str>) -> String {
+    let macos = dir.join("Fake.app/Contents/MacOS");
+    std::fs::create_dir_all(&macos).unwrap();
+    write_script(&macos.join("cli"), "echo wrapper-ran");
+    write_script(&macos.join("fake-main"), "echo main-executable-ran \"$@\"");
+
+    if let Some(name) = executable_name {
+        std::fs::write(
+            dir.join("Fake.app/Contents/Info.plist"),
+            format!(
+                "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n\
+                 <plist version=\"1.0\"><dict>\n\
+                 \t<key>CFBundleExecutable</key>\n\t<string>{name}</string>\n\
+                 </dict></plist>\n"
+            ),
+        )
+        .unwrap();
+    }
+
+    let bin = dir.join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    std::os::unix::fs::symlink(macos.join("cli"), bin.join("fakeapp")).unwrap();
+
+    format!("{}:/usr/bin:/bin:/usr/sbin:/sbin", bin.display())
+}
+
+/// Write an executable `/bin/sh` script.
+fn write_script(path: &Path, body: &str) {
+    use std::os::unix::fs::PermissionsExt;
+
+    std::fs::write(path, format!("#!/bin/sh\n{body}\n")).unwrap();
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+}
+
+#[test]
+fn runs_the_bundle_executable_for_a_bare_command_name() {
+    // Given an app bundle whose CLI wrapper is on PATH under a bare name
+    let dir = workdir("runs-bundle-executable-for-bare-name");
+    let path = fake_app_bundle(&dir, Some("fake-main"));
+    let mut cmd = sandme(&dir);
+    cmd.env("PATH", path).args(["fakeapp", "a-project"]);
+
+    // When the user names it the way the spec's Story 1 does — `sandme zed ~/Workspace/`
+    let output = cmd.output().unwrap();
+
+    // Then the bundle's own executable ran, not the LaunchServices wrapper
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "main-executable-ran a-project",
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn runs_the_bundle_executable_for_a_quoted_command() {
+    // Given the same bundle, named inside a single quoted operand
+    let dir = workdir("runs-bundle-executable-for-quoted-command");
+    let path = fake_app_bundle(&dir, Some("fake-main"));
+    let mut cmd = sandme(&dir);
+    cmd.env("PATH", path).arg("fakeapp ~/a-project");
+
+    // When the user types the form the README documents
+    let output = cmd.output().unwrap();
+
+    // Then the bundle's executable ran, and the shell still expanded the
+    // arguments it was handed
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stdout = stdout.trim_end();
+    assert!(
+        stdout.starts_with("main-executable-ran /") && stdout.ends_with("/a-project"),
+        "expected the bundle executable with an expanded path; got {stdout:?}, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reports_an_app_bundle_it_cannot_read() {
+    // Given a CLI wrapper inside a bundle with no readable Info.plist
+    let dir = workdir("reports-an-app-bundle-it-cannot-read");
+    let path = fake_app_bundle(&dir, None);
+    let mut cmd = sandme(&dir);
+    cmd.env("PATH", path).arg("fakeapp");
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then sandme says on stderr that it recognised the bundle and gave up,
+    // instead of leaving the user with only the app's own failure
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sandme: fakeapp") && stderr.contains("Fake.app"),
+        "expected a diagnostic naming the bundle; got {stderr:?}"
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "wrapper-ran"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn leaves_a_compound_shell_command_to_the_shell() {
+    // Given a quoted command whose first word is not the program
+    let dir = workdir("leaves-a-compound-shell-command-to-the-shell");
+    let path = fake_app_bundle(&dir, Some("fake-main"));
+    let mut cmd = sandme(&dir);
+    cmd.env("PATH", path).arg("true && fakeapp");
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then sandme rewrote nothing — guessing which word of a compound command
+    // is the program would risk running something the user never asked for
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "wrapper-ran"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Answer one HTTP request with a fixed payload.
 async fn serve_once(listener: tokio::net::TcpListener) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
