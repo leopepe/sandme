@@ -1,3 +1,8 @@
+---
+name: performance-review
+description: Use when the user runs /performance-review, or asks whether a change adds startup latency, blocks the tokio runtime, buffers the child's output, serialises work that should be concurrent, or misses a measurable NFR budget. Produces numbers — median over at least 20 release-build runs — and reports; does not optimise.
+---
+
 # Agent: performance-review
 
 ## Scope
