@@ -49,9 +49,22 @@ Use `--` when the command has its own options that would otherwise be read as `s
 sandme -- curl -sS https://example.com/
 ```
 
-`sandme` exits with the command's own exit status, or `128+n` if it died from signal `n`
-(Ctrl-C gives `130`). Its own failures — unreadable config, proxy could not bind — print a
-`sandme: ` message and exit `1`.
+### Exit status
+
+`sandme` follows the exec-wrapper convention of `env(1)` and `timeout(1)`, so a script can tell
+a failure of `sandme`'s from a failure of the command it wrapped:
+
+| Status | Meaning |
+| --- | --- |
+| `0`–`124` | The command's own exit status, passed through unchanged |
+| `125` | `sandme` itself failed — unreadable or malformed config, the proxy could not bind, the sandbox could not be started. The command did not run. |
+| `126` | The command was found but is not executable |
+| `127` | The command was not found |
+| `128+n` | The command was killed by signal `n` (Ctrl-C gives `130`) |
+
+Every status `sandme` produces for itself comes with a `sandme: ` line on stderr, and `sandme`
+prefixes nothing it did not write. That is the reliable signal: a command is free to exit `125`
+on its own account, and `sandme` passes that through untouched rather than rewriting it.
 
 ## Configuration
 
@@ -253,7 +266,6 @@ Read these before trusting the sandbox with something hostile.
 | Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | The proxy runs unsandboxed and forwards anywhere without filtering, including host-local and LAN services the sandbox itself blocks. | [#15](https://github.com/leopepe/sandme/issues/15) |
 | `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
-| `sandme`'s own failures exit `1`, which collides with the wrapped command's own status. | [#11](https://github.com/leopepe/sandme/issues/11) |
 
 ## Development
 
