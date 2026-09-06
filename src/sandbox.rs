@@ -7,6 +7,16 @@ use std::process::ExitStatus;
 use crate::app_bundle;
 use crate::config::Config;
 use crate::error::SandmeError;
+use crate::executable;
+
+/// `sandbox-exec`'s exit status when it could not execute the command.
+///
+/// It answers this one value — `EX_OSERR` from `sysexits.h` — for every
+/// `execvp` failure, naming the cause only in a message on the child's
+/// stderr, so the status alone tells the caller nothing the exec-wrapper
+/// convention recognises. sandme translates it where it can establish the
+/// cause itself (SPEC-0004).
+const EXEC_FAILED: i32 = 71;
 
 /// Generate the Seatbelt (SBPL) profile applied to the sandboxed command.
 ///
@@ -262,6 +272,17 @@ pub async fn run(
             child.wait().await.map_err(SandmeError::Execute)?
         }
     };
+
+    // `sandbox-exec` reached execvp and it failed. Which of the two failures
+    // posix.md §4 names it was is not in the status, so it is worked out from
+    // the filesystem; a 71 that resolution cannot explain — a profile that
+    // would not compile, or a command that ran and chose 71 for itself —
+    // passes through untouched (FR-203, FR-204).
+    if status.code() == Some(EXEC_FAILED)
+        && let Some(error) = executable::exec_failure(&program)
+    {
+        return Err(error);
+    }
 
     Ok(status)
 }

@@ -27,6 +27,24 @@ pub enum SandmeError {
         source: toml::de::Error,
     },
 
+    /// Nothing of the name the user gave could be found to execute.
+    ///
+    /// Separate from [`Self::CommandNotExecutable`] because the two are
+    /// separate statuses to the caller — `127` and `126` — and separate
+    /// mistakes to the user: a typo against a permission.
+    #[error("{command}: command not found")]
+    CommandNotFound {
+        /// The command word as the user wrote it.
+        command: String,
+    },
+
+    /// A file of that name was found, but it is not something to execute.
+    #[error("{command}: found but not executable")]
+    CommandNotExecutable {
+        /// The command word as the user wrote it.
+        command: String,
+    },
+
     /// The sandboxed command could not be started.
     #[error("sandboxed command could not be started: {0}")]
     Execute(std::io::Error),
