@@ -3,6 +3,8 @@
 
 mod app_bundle;
 mod config;
+mod credential;
+mod egress;
 mod error;
 mod executable;
 mod proxy;
@@ -60,9 +62,13 @@ async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
 
     // The proxy comes up first: a sandbox without its proxy is a broken
     // sandbox, so the invocation fails instead (FR-005).
-    let server = proxy::serve(config.proxy_port)?;
+    // `serve` takes the whole config now: the port, and the credential the
+    // child must present (SPEC-0003/FR-302).
+    let server = proxy::serve(&config)?;
 
-    sandbox::run(&config, server.addr(), command).await
+    // The server, not just its address: the child's proxy URL carries the
+    // credential, so `run` needs both.
+    sandbox::run(&config, &server, command).await
     // `server` is dropped here: the proxy's lifetime follows the command's (T-007).
 }
 
