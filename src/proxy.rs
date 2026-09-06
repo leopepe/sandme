@@ -245,7 +245,7 @@ async fn forward(mut req: Request<Incoming>) -> Response<Body> {
 ///
 /// The upstream connection is established before the `200` goes out, so a
 /// refused target answers `502` instead of a dead tunnel. It is made to the
-/// addresses [`resolve`] vetted, not to the name again: re-resolving would
+/// addresses [`egress::resolve`] vetted, not to the name again: re-resolving would
 /// let a second answer replace the one that was checked. Once both ends are
 /// up, bytes are copied in both directions until either side closes.
 async fn open_tunnel(req: Request<Incoming>, addresses: &[SocketAddr]) -> Response<Body> {
