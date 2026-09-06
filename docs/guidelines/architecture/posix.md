@@ -66,16 +66,25 @@ The exec-wrapper convention, shared with `env(1)`, `timeout(1)` and the shell:
 | Status | Meaning |
 | --- | --- |
 | `0` | The wrapped command succeeded |
-| `1`–`125` | The wrapped command's own exit status, or a `sandme` failure |
+| `1`–`124` | The wrapped command's own exit status |
+| `125` | `sandme` itself failed, so the command did not run |
 | `126` | The command was found but could not be executed |
 | `127` | The command was not found |
 | `128+n` | The command was terminated by signal `n` |
 
-- The wrapped command's exit status MUST be propagated unchanged.
+- The wrapped command's exit status MUST be propagated unchanged — including `125`, `126` and
+  `127` when the command itself returned one. Reserving a value binds `sandme`, not the child.
 - Termination by signal MUST become `128+n`, not a clamped or collapsed value. A child killed by
   `SIGINT` (2) exits `130`; reporting `1` tells the caller the wrong thing.
 - `sandme`'s own failures MUST NOT collide with statuses the wrapped command can plausibly
-  return where the spec can avoid it; reserve and document them.
+  return where the spec can avoid it; reserve and document them. `125` is that reservation,
+  shared with `env(1)` and `timeout(1)`. A reserved status cannot be unambiguous on its own —
+  one byte cannot say both "the wrapper failed" and "the command returned this" — so a
+  reserved status MUST always be accompanied by a `sandme: ` diagnostic on stderr (§3), which
+  is the channel a caller can read without ambiguity.
+- Where the mechanism `sandme` launches through reports an exec failure in its own vocabulary,
+  `sandme` MUST translate it into `126`/`127` when it can establish the cause, and propagate it
+  unchanged when it cannot. Guessing is worse than passing through.
 
 ## 5. Exec-wrapper shape
 
@@ -124,6 +133,7 @@ struct Cli {
 - [ ] Nothing is printed on the success path that the user did not ask for.
 - [ ] Colour suppressed when not a TTY or when `NO_COLOR` is set.
 - [ ] Child exit status propagated; signal deaths reported as `128+n`.
+- [ ] `sandme`'s own failures exit `125` and say so on stderr; no failure of its own exits `1`.
 - [ ] Every non-zero status documented in the spec's Exit codes table.
 - [ ] Multi-operand commands: the child receives its own arguments unshelled and unquoted.
 - [ ] Single-operand commands: the string is routed through `/bin/sh -c`.
