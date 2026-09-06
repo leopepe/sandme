@@ -7,7 +7,8 @@ use thiserror::Error;
 /// All errors a sandme invocation can fail with.
 ///
 /// Each variant is one cause the user can act on or that changes the message
-/// they need; causes handled identically share a variant.
+/// they need; causes handled identically share a variant. The exit status each
+/// one becomes is decided in one place, `main::failure_code` (SPEC-0004).
 #[derive(Debug, Error)]
 pub enum SandmeError {
     /// The configuration file exists but could not be read.
@@ -24,6 +25,24 @@ pub enum SandmeError {
     ConfigParse {
         /// The underlying parse failure.
         source: toml::de::Error,
+    },
+
+    /// Nothing of the name the user gave could be found to execute.
+    ///
+    /// Separate from [`Self::CommandNotExecutable`] because the two are
+    /// separate statuses to the caller — `127` and `126` — and separate
+    /// mistakes to the user: a typo against a permission.
+    #[error("{command}: command not found")]
+    CommandNotFound {
+        /// The command word as the user wrote it.
+        command: String,
+    },
+
+    /// A file of that name was found, but it is not something to execute.
+    #[error("{command}: found but not executable")]
+    CommandNotExecutable {
+        /// The command word as the user wrote it.
+        command: String,
     },
 
     /// The sandboxed command could not be started.
