@@ -13,7 +13,7 @@ use crate::error::SandmeError;
 #[derive(Debug, Clone, Deserialize)]
 pub struct Config {
     /// Filesystem paths the sandboxed command may access.
-    #[serde(default)]
+    #[serde(default = "default_shared_paths")]
     pub shared_paths: Vec<String>,
 
     /// Port for the HTTP proxy server.
@@ -25,22 +25,36 @@ pub struct Config {
     /// When `true`, the sandbox grants write access to `/private/tmp` and
     /// `/private/var/folders`, which GUI apps need for state and caches.
     /// Defaults to `false` to preserve the strict security model.
-    #[serde(default)]
+    #[serde(default = "default_gui_mode")]
     pub gui_mode: bool,
 }
 
 impl Default for Config {
     fn default() -> Self {
         Self {
-            shared_paths: vec!["~/".to_string()],
+            shared_paths: default_shared_paths(),
             proxy_port: default_proxy_port(),
-            gui_mode: false,
+            gui_mode: default_gui_mode(),
         }
     }
 }
 
+/// Every default has exactly one definition, used by both `Default` and serde.
+///
+/// Two definitions is how `shared_paths` came to have different defaults
+/// depending on whether a config file existed: `Default` said `~/`, the
+/// derived serde default for a `Vec` said empty, and `load` replaces the
+/// whole struct when a file is present.
+fn default_shared_paths() -> Vec<String> {
+    vec!["~/".to_string()]
+}
+
 fn default_proxy_port() -> u16 {
     8787
+}
+
+fn default_gui_mode() -> bool {
+    false
 }
 
 /// Resolve the config file path (~/.sandme/config.toml).
@@ -120,6 +134,44 @@ mod tests {
         // Then the defaults are returned
         assert_eq!(config.shared_paths, vec!["~/".to_string()]);
         assert_eq!(config.proxy_port, 8787);
+
+        // Restore HOME
+        unsafe {
+            match original_home {
+                Some(home) => std::env::set_var("HOME", home),
+                None => std::env::remove_var("HOME"),
+            }
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn keeps_defaults_for_keys_a_config_file_omits() {
+        // Given a config file that sets one key and leaves the rest out
+        // (one test owns HOME to keep the suite parallel-safe;
+        // the calls are safe here: this single test is its only writer)
+        let dir = std::env::temp_dir().join("sandme-test-partial-config-file");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".sandme")).unwrap();
+        std::fs::write(dir.join(".sandme/config.toml"), "proxy_port = 9000\n").unwrap();
+        let original_home = std::env::var("HOME").ok();
+        unsafe {
+            std::env::set_var("HOME", &dir);
+            std::env::remove_var("SANDME_SHARED_PATHS");
+            std::env::remove_var("SANDME_PROXY_PORT");
+        }
+
+        // When the configuration is loaded
+        let config = load().unwrap();
+
+        // Then the key the file sets is honoured, and the omitted keys keep
+        // the documented defaults rather than serde's empty ones. Before this
+        // was fixed, shared_paths came back empty and the sandboxed command
+        // silently lost all filesystem access.
+        assert_eq!(config.proxy_port, 9000);
+        assert_eq!(config.shared_paths, vec!["~/".to_string()]);
+        assert!(!config.gui_mode);
 
         // Restore HOME
         unsafe {
