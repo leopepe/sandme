@@ -86,6 +86,15 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
 /// any of the three, so they are denied rather than left to configuration.
 const DENIED_HOME_LIBRARY_DIRECTORIES: [&str; 3] = ["Keychains", "LaunchAgents", "LaunchDaemons"];
 
+/// Directories under `$HOME` denied outright, whatever the configuration says.
+///
+/// `.sandme` holds the configuration that decides what the sandbox permits. A
+/// command able to write it cannot widen the run it is in — the profile is
+/// already loaded — but it sets the terms of the next one: `shared_paths = ["/"]`
+/// and `allow_private_egress = true` take effect the moment the user runs
+/// `sandme` again. The policy must not be writable by what it constrains.
+const DENIED_HOME_DIRECTORIES: [&str; 1] = [".sandme"];
+
 /// Append the read-write grants the configuration asks for (FR-004).
 ///
 /// These are the only rules in the profile that vary per invocation, which is
@@ -135,6 +144,10 @@ fn append_unconditional_denials(sbpl: &mut String) {
             sbpl,
             "(deny file-read* file-write* (subpath \"{home}/Library/{directory}\"))"
         );
+    }
+
+    for directory in DENIED_HOME_DIRECTORIES {
+        let _ = writeln!(sbpl, "(deny file-write* (subpath \"{home}/{directory}\"))");
     }
 }
 

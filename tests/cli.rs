@@ -860,7 +860,6 @@ fn propagates_an_unexplained_exec_status() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-
 // SPEC-0003 — the proxy refuses the destinations the sandbox denies the
 // command directly, and relays only for the invocation that started it.
 
