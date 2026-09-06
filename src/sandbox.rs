@@ -362,7 +362,12 @@ mod tests {
         assert!(profile.contains("/private/var/folders"));
     }
 
+    // `$HOME` is process-wide, and config.rs's tests reassign it while they
+    // run. This test and the next read it twice — once here, once inside the
+    // profile — and need both reads to see the same value, so they queue
+    // behind those (serial_test's default key is shared crate-wide).
     #[test]
+    #[serial_test::serial]
     fn grants_the_home_library_only_in_gui_mode() {
         let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
         let home = canonical_home().expect("cargo test runs with HOME set");
@@ -376,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn denies_the_launchd_and_keychain_directories_after_every_grant() {
         // Given the home directory shared read-write, as it is by default
         let profile = generate_profile(
