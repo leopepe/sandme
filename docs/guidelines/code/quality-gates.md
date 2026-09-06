@@ -28,6 +28,12 @@ tells you nothing.
 
 `cargo doc --no-deps` MUST also be warning-free — see `docs/guidelines/code/rust.md` §4.
 
+**Doctests are not covered by this gate, because nothing can cover them here.** Cargo builds
+doctests only for library targets and `sandme` is binary-only, so `cargo test --doc` exits with
+*no library targets found* and step 4 never reaches a rustdoc example. A doc example can therefore
+go stale without any command failing. If a library target is ever added, `cargo test --doc` MUST
+join this gate.
+
 ## 3. When the gate runs
 
 - **After writing or changing any code**, before the work is described as done. MUST NOT report a
