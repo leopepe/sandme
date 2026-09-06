@@ -15,6 +15,10 @@ use crate::error::SandmeError;
 /// read-write access to the shared paths, and network egress to the proxy
 /// and nothing else (FR-006).
 ///
+/// The profile closes with the denials in [`DENIED_HOME_LIBRARY_DIRECTORIES`],
+/// which sit last because SBPL resolves a path against the *last* rule that
+/// matches it. Anything appended after them could grant them back.
+///
 /// `/dev/fd` sits with the other device rules because shells implement
 /// process substitution — `cat <(echo hi)` — by handing the child a
 /// `/dev/fd/N` path. Such a path only names a descriptor the process already
@@ -57,8 +61,19 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
         "(allow network-outbound (remote ip \"localhost:{}\"))",
         proxy.port()
     );
+
+    append_unconditional_denials(&mut sbpl);
     sbpl
 }
+
+/// Directories under `~/Library` that no configuration may reach.
+///
+/// `LaunchAgents` and `LaunchDaemons` are launchd's job directories: a plist
+/// written to either one is executed at the next login *outside* the sandbox,
+/// which turns any writable share into a persistence escape (issue #12).
+/// `Keychains` holds the login keychain. An editor or agent has no business in
+/// any of the three, so they are denied rather than left to configuration.
+const DENIED_HOME_LIBRARY_DIRECTORIES: [&str; 3] = ["Keychains", "LaunchAgents", "LaunchDaemons"];
 
 /// Append the read-write grants the configuration asks for (FR-004).
 ///
@@ -73,16 +88,17 @@ fn append_writable_grants(sbpl: &mut String, config: &Config) {
         );
     }
 
-    // GUI applications need write access to ~/Library for state, caches, and preferences
-    if let Ok(home) = std::env::var("HOME") {
-        let _ = writeln!(
-            sbpl,
-            "(allow file-read* file-write* (subpath \"{home}/Library\"))"
-        );
-    }
-
-    // GUI mode: allow write access to temporary directories
     if config.gui_mode {
+        // GUI applications keep state, caches and preferences under ~/Library,
+        // and scratch space in the temporary directories. A command that is not
+        // a GUI application needs none of it, so none of it is granted unless
+        // the user asks for GUI mode (issue #12).
+        if let Some(home) = canonical_home() {
+            let _ = writeln!(
+                sbpl,
+                "(allow file-read* file-write* (subpath \"{home}/Library\"))"
+            );
+        }
         let _ = writeln!(
             sbpl,
             "(allow file-read* file-write* (subpath \"/private/tmp\"))"
@@ -92,6 +108,34 @@ fn append_writable_grants(sbpl: &mut String, config: &Config) {
             "(allow file-read* file-write* (subpath \"/private/var/folders\"))"
         );
     }
+}
+
+/// Append the denials no configuration may lift.
+///
+/// SBPL is last-match-wins, so these MUST be the profile's final rules. Emitted
+/// any earlier, the default `shared_paths = ["~/"]` would grant `~/Library`
+/// straight back and the denial would silently do nothing for exactly the
+/// configuration most users run.
+fn append_unconditional_denials(sbpl: &mut String) {
+    let Some(home) = canonical_home() else { return };
+
+    for directory in DENIED_HOME_LIBRARY_DIRECTORIES {
+        let _ = writeln!(
+            sbpl,
+            "(deny file-read* file-write* (subpath \"{home}/Library/{directory}\"))"
+        );
+    }
+}
+
+/// The home directory as the kernel sees it: `$HOME` with symlinks resolved.
+///
+/// A rule written from the raw `$HOME` would not match a canonicalised
+/// `shared_paths` entry naming the same directory — `/var/…` and
+/// `/private/var/…` are the same place but not the same subpath — and a denial
+/// that does not match is a denial that does not deny.
+fn canonical_home() -> Option<String> {
+    let home = std::env::var("HOME").ok()?;
+    Some(std::fs::canonicalize(&home).map_or(home, |resolved| resolved.display().to_string()))
 }
 
 /// Expand a path starting with ~ to the home directory, and resolve
@@ -280,17 +324,57 @@ mod tests {
         assert!(!profile.contains("network-bind"));
     }
 
+    fn gui_config_with(paths: &[&str]) -> Config {
+        Config {
+            gui_mode: true,
+            ..config_with(paths)
+        }
+    }
+
     #[test]
     fn gui_mode_allows_temp_writes() {
-        let config = Config {
-            shared_paths: vec![],
-            proxy_port: 8787,
-            gui_mode: true,
-        };
-        let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 8787));
-        let profile = generate_profile(&config, proxy);
+        let profile = generate_profile(
+            &gui_config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 8787)),
+        );
         assert!(profile.contains("/private/tmp"));
         assert!(profile.contains("/private/var/folders"));
+    }
+
+    #[test]
+    fn grants_the_home_library_only_in_gui_mode() {
+        let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
+        let home = canonical_home().expect("cargo test runs with HOME set");
+        let grant = format!("(allow file-read* file-write* (subpath \"{home}/Library\"))");
+
+        // Given GUI mode, the state directory GUI applications need is granted
+        assert!(generate_profile(&gui_config_with(&[]), proxy).contains(&grant));
+
+        // Given no GUI mode, nothing grants it implicitly
+        assert!(!generate_profile(&config_with(&[]), proxy).contains(&grant));
+    }
+
+    #[test]
+    fn denies_the_launchd_and_keychain_directories_after_every_grant() {
+        // Given the home directory shared read-write, as it is by default
+        let profile = generate_profile(
+            &gui_config_with(&["~/"]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+        let home = canonical_home().expect("cargo test runs with HOME set");
+
+        // Then each denial is present, and every one of them follows the last
+        // allow rule in the profile: SBPL is last-match-wins, so a denial that
+        // preceded a grant of `~/` would be overridden by it.
+        let last_allow = profile.rfind("(allow ").expect("the profile grants");
+        for directory in DENIED_HOME_LIBRARY_DIRECTORIES {
+            let denial =
+                format!("(deny file-read* file-write* (subpath \"{home}/Library/{directory}\"))");
+            let at = profile
+                .find(&denial)
+                .unwrap_or_else(|| panic!("profile is missing: {denial}"));
+            assert!(at > last_allow, "{denial} must come after every allow rule");
+        }
     }
 
     #[test]

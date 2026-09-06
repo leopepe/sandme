@@ -62,7 +62,7 @@ environment always wins.
 | --- | --- | --- | --- | --- |
 | `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` | Paths the sandboxed command may **read and write**. `~/` expands to your home directory; symlinks are resolved. |
 | `proxy_port` | `SANDME_PROXY_PORT` | integer | `8787` | Loopback port the egress proxy listens on. `0` picks a free port — use it when running several `sandme` invocations at once. |
-| `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `/private/tmp` and `/private/var/folders`. GUI apps and most editors need this for their scratch space. |
+| `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `~/Library`, `/private/tmp` and `/private/var/folders`. GUI apps and most editors need this for their state, caches and scratch space. |
 
 No config file is required — without one you get the defaults. A malformed file is reported
 rather than ignored.
@@ -81,7 +81,7 @@ shared_paths = [
   "/opt/homebrew",    # Homebrew toolchain (Apple silicon; use /usr/local on Intel)
 ]
 proxy_port = 8787
-gui_mode = true       # editors need scratch space
+gui_mode = true       # editors need ~/Library and scratch space
 ```
 
 There is a fuller, commented version in [`examples/config.toml`](examples/config.toml).
@@ -89,9 +89,19 @@ There is a fuller, commented version in [`examples/config.toml`](examples/config
 ## What the sandbox allows
 
 **Filesystem.** Read-only access to the system runtime — `/usr`, `/bin`, `/sbin`, `/System`,
-`/Library`, `/Applications`, `/private/etc`. Read+write to everything in `shared_paths`, plus
-`~/Library` and (with `gui_mode`) the temp directories. Everything else is denied for both reading
-and writing.
+`/Library`, `/Applications`, `/private/etc`. Read+write to everything in `shared_paths`, plus —
+only with `gui_mode` — `~/Library` and the temp directories. Everything else is denied for both
+reading and writing.
+
+Three directories are denied outright, and no setting grants them back:
+
+| Denied always | Why |
+| --- | --- |
+| `~/Library/LaunchAgents`, `~/Library/LaunchDaemons` | A plist written here is run by launchd at your next login — **outside** the sandbox. A writable one turns any share into a persistence escape. |
+| `~/Library/Keychains` | Your login keychain. Apps that store credentials through Keychain Services are unaffected: `securityd` reads the files, not the sandboxed process. |
+
+The rules are emitted last in the profile, after every grant, because Seatbelt resolves a path
+against the last rule that matches it. `shared_paths = ["~/"]` does not lift them.
 
 **Network.** TCP to the proxy port, and nothing else. Direct HTTP, DNS, raw sockets, ICMP and
 listening sockets are all denied. `sandme` sets `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase
@@ -201,12 +211,25 @@ would run something you did not ask for. Name the app first, or use the multi-op
 ### Coding agents
 
 ```shell
+SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="$HOME,/opt/homebrew" \
+  sandme claude
+```
+
+The agent's HTTP calls go through the proxy — with the caveats in the next section.
+
+Narrowing the share to the project alone does not work today:
+
+```shell
+# fails: error: An internal error occurred (EPERM)
 SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="~/Workspace/my-project,/opt/homebrew" \
   sandme claude
 ```
 
-The agent's HTTP calls go through the proxy, and it cannot read outside the project — with the
-caveats in the next section.
+`claude` is a native binary that finds its own home through the passwd database rather than
+`$HOME`, and it reads and rewrites state next to `~/.claude.json`. Sharing `~/.claude` and
+`~/.claude.json` explicitly is not enough. Until `shared_paths` can express that shape
+([#10](https://github.com/leopepe/sandme/issues/10)), share `$HOME` and rely on the network
+confinement rather than the filesystem confinement.
 
 ### Several invocations at once
 
@@ -222,7 +245,9 @@ Read these before trusting the sandbox with something hostile.
 
 | | Issue |
 | --- | --- |
-| `shared_paths` defaults to your whole home directory, and `~/Library` is shared read+write regardless of what you configure — including `~/Library/Keychains` and `~/Library/LaunchAgents`. | [#12](https://github.com/leopepe/sandme/issues/12) |
+| `shared_paths` defaults to your whole home directory, so out of the box the command reads and writes everything under `~` — `~/.ssh` and `~/.aws` included. | [#12](https://github.com/leopepe/sandme/issues/12) |
+| `gui_mode` widens the sandbox globally rather than per-app: it shares all of `/private/tmp` and `/private/var/folders`, not just the launched app's own container. | [#12](https://github.com/leopepe/sandme/issues/12) |
+| `mach-lookup` is allowed with no service allowlist, so `osascript` can talk to running apps. No escape has been demonstrated through it, but the channel is not closed. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | An app-bundle CLI wrapper is only redirected when it is the first word of the command; inside a compound shell string (`sandme 'cd ~/proj && zed .'`) it is left to the shell and fails. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Redirecting to the bundle executable loses the wrapper's own flags (`zed --wait`, `--version`) — the two binaries have different CLIs. Paths are unaffected. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
