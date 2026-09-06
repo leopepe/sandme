@@ -731,24 +731,103 @@ fn reports_a_proxy_that_cannot_bind_with_the_reserved_status() {
 }
 
 #[test]
-fn propagates_a_childs_own_reserved_status() {
-    // Given a command that chooses the reserved status for itself
-    let dir = workdir("propagates-a-childs-own-reserved-status");
-
+fn reports_a_command_it_cannot_find_as_127() {
+    // Given a name nothing on PATH answers to, passed as operands
+    let dir = workdir("reports-a-command-it-cannot-find");
     let mut cmd = sandme(&dir);
-    cmd.args(["sh", "-c", "exit 125"]);
+    cmd.args(["sandme-no-such-command", "an-argument"]);
 
-    // When it is run under sandme
+    // When it is run
     let output = cmd.output().unwrap();
 
-    // Then the status is passed through untouched: reserving a value binds
-    // sandme, not the command it wraps (FR-205)
-    assert_eq!(output.status.code(), Some(125));
+    // Then sandme reports the status every shell reports for it, and names the
+    // command on stderr (FR-203)
+    assert_eq!(output.status.code(), Some(127));
+    let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        output.stderr.is_empty(),
-        "sandme spoke about a status it only forwarded: {:?}",
-        String::from_utf8_lossy(&output.stderr)
+        stderr.contains("sandme: sandme-no-such-command: command not found"),
+        "expected a prefixed not-found diagnostic; got {stderr:?}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reports_a_missing_command_in_a_shell_string_as_127() {
+    // Given the same name inside a single quoted operand, where /bin/sh does
+    // the lookup instead of sandme
+    let dir = workdir("reports-a-missing-command-in-a-shell-string");
+    let mut cmd = sandme(&dir);
+    cmd.arg("sandme-no-such-command an-argument");
+
+    // When it is run
+    let status = cmd.status().unwrap();
+
+    // Then the two forms agree: the same command is the same status (FR-203)
+    assert_eq!(status.code(), Some(127));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reports_a_command_that_is_not_executable_as_126() {
+    // Given a file that exists and carries no execute bit
+    let dir = workdir("reports-a-command-that-is-not-executable");
+    let script = dir.join("not-executable.sh");
+    std::fs::write(&script, "#!/bin/sh\necho ran\n").unwrap();
+    let program = script.display().to_string();
+    let mut cmd = sandme(&dir);
+    cmd.args([program.as_str(), "an-argument"]);
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then sandme distinguishes it from a command that is simply absent
+    // (FR-204)
+    assert_eq!(output.status.code(), Some(126));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains(&format!("sandme: {program}: found but not executable")),
+        "expected a prefixed not-executable diagnostic; got {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reports_a_non_executable_command_in_a_shell_string_as_126() {
+    // Given the same file, named inside a single quoted operand
+    let dir = workdir("reports-a-non-executable-command-in-a-shell-string");
+    let script = dir.join("not-executable.sh");
+    std::fs::write(&script, "#!/bin/sh\necho ran\n").unwrap();
+    let mut cmd = sandme(&dir);
+    cmd.arg(script.display().to_string());
+
+    // When it is run
+    let status = cmd.status().unwrap();
+
+    // Then the shell's answer matches sandme's own (FR-204)
+    assert_eq!(status.code(), Some(126));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn propagates_a_childs_own_reserved_status() {
+    // Given commands that choose the reserved statuses for themselves
+    let dir = workdir("propagates-a-childs-own-reserved-status");
+
+    for code in [125, 126, 127] {
+        // When each is run under sandme
+        let mut cmd = sandme(&dir);
+        cmd.args(["sh", "-c", &format!("exit {code}")]);
+        let output = cmd.output().unwrap();
+
+        // Then the status is passed through untouched: reserving a value binds
+        // sandme, not the command it wraps (FR-205)
+        assert_eq!(output.status.code(), Some(code));
+        assert!(
+            output.stderr.is_empty(),
+            "sandme spoke about a status it only forwarded: {:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 

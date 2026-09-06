@@ -4,6 +4,7 @@
 mod app_bundle;
 mod config;
 mod error;
+mod executable;
 mod proxy;
 mod sandbox;
 
@@ -21,6 +22,12 @@ use crate::error::SandmeError;
 /// that fails on its own account and exits `1` is indistinguishable from the
 /// command it was asked to run.
 const SANDME_FAILURE: u8 = 125;
+
+/// The status for a command that was found but could not be executed (FR-204).
+const NOT_EXECUTABLE: u8 = 126;
+
+/// The status for a command that could not be found (FR-203).
+const NOT_FOUND: u8 = 127;
 
 /// sandme — run an IDE or code agent inside a macOS Seatbelt sandbox
 #[derive(Parser, Debug)]
@@ -63,8 +70,8 @@ async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
 ///
 /// Follows the exec-wrapper convention (docs/guidelines/architecture/posix.md
 /// §4): the child's status is propagated unchanged, and termination by a
-/// signal becomes `128+n`. A command that chose `125` for itself keeps it —
-/// reserving a status binds sandme, not the child (FR-205).
+/// signal becomes `128+n`. A command that chose `125`, `126` or `127` for
+/// itself keeps it — reserving a status binds sandme, not the child (FR-205).
 fn exit_code(status: ExitStatus) -> ExitCode {
     if status.success() {
         return ExitCode::SUCCESS;
@@ -83,6 +90,8 @@ fn exit_code(status: ExitStatus) -> ExitCode {
 /// has to state which status it means instead of silently inheriting one.
 fn failure_code(error: &SandmeError) -> ExitCode {
     match error {
+        SandmeError::CommandNotFound { .. } => ExitCode::from(NOT_FOUND),
+        SandmeError::CommandNotExecutable { .. } => ExitCode::from(NOT_EXECUTABLE),
         SandmeError::ConfigRead { .. }
         | SandmeError::ConfigParse { .. }
         | SandmeError::Execute(_)

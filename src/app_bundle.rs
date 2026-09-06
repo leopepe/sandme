@@ -3,6 +3,8 @@
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 
+use crate::executable;
+
 /// What sandme should run in place of the program the user named.
 ///
 /// The three cases are told apart because they need different treatment:
@@ -53,7 +55,7 @@ pub fn main_executable(program: &str) -> Option<String> {
 
 /// Decide what `program` should become.
 fn resolve(program: &str) -> Resolution {
-    let Some(located) = locate(program) else {
+    let Some(located) = executable::locate(program) else {
         return Resolution::AsWritten;
     };
     let Some(bundle) = bundle_root(&located) else {
@@ -84,31 +86,6 @@ fn unreadable(bundle: &Path, reason: &'static str) -> Resolution {
         bundle: bundle.to_path_buf(),
         reason,
     }
-}
-
-/// Find `program` on disk the way the child would, with symlinks resolved.
-///
-/// A bare command name is looked up on `PATH` — the child inherits sandme's
-/// environment, so sandme's `PATH` is the child's. Canonicalizing the name
-/// directly, as this used to, resolves it against sandme's working directory
-/// instead and finds nothing (issue #13).
-fn locate(program: &str) -> Option<PathBuf> {
-    if program.contains('/') {
-        return std::fs::canonicalize(program).ok();
-    }
-    let path = std::env::var_os("PATH")?;
-    std::env::split_paths(&path)
-        .map(|dir| dir.join(program))
-        .find(|candidate| is_executable(candidate))
-        .and_then(|candidate| std::fs::canonicalize(candidate).ok())
-}
-
-/// Whether `path` is a file the current user could exec.
-fn is_executable(path: &Path) -> bool {
-    use std::os::unix::fs::PermissionsExt;
-
-    std::fs::metadata(path)
-        .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 /// The `.app` directory `path` sits inside, if it sits inside one.
@@ -181,13 +158,5 @@ mod tests {
     fn finds_no_bundle_outside_one() {
         assert_eq!(bundle_root(Path::new("/usr/bin/vim")), None);
         assert_eq!(bundle_root(Path::new("/opt/Contents/MacOS/x")), None);
-    }
-
-    #[test]
-    fn locates_a_bare_name_on_path() {
-        // `sh` is on PATH on every macOS host; the point is that a bare name
-        // resolves at all, which canonicalizing against the CWD never did.
-        assert!(locate("sh").is_some());
-        assert_eq!(locate("sandme-no-such-command"), None);
     }
 }
