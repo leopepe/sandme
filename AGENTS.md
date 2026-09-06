@@ -15,9 +15,11 @@ Rust 2024, single binary, macOS only.
 
 ## Before implementing
 
-- Run the `spec-check` skill. It verifies that a spec exists, is at `Status: Accepted`,
-  has no open questions, and does not contradict existing specs or ADRs. Do not write
-  implementation code until `spec-check` passes.
+- Confirm an approved spec stands behind the change: a spec in `docs/specs/` covers the
+  capability, its `Status` is `Accepted`, its open questions are resolved, and it contradicts
+  no existing spec or ADR. Do not write implementation code until that holds.
+  `docs/guidelines/sdd/spec-driven-development.md` is the authority on this check, and on the
+  §9 fast path that exempts trivial changes from it.
 
 ## Before finishing any task
 
