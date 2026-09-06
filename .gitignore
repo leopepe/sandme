@@ -3,3 +3,5 @@
 .plans
 .claude/settings.local.json
 .pi-subagents/
+.claude/worktrees/
+.serena/
