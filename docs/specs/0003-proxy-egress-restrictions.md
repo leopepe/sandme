@@ -230,7 +230,7 @@ No new flag and no new exit code. The proxy's answers to the client are:
   still unstable in `std`, so they are matched on the address's first segment. No new
   dependency (`AGENTS.md`, Dependencies).
 - The proxy runs unsandboxed inside sandme's own process. Nothing in the sandbox profile can
-  enforce FR-201; it is enforced in `src/proxy.rs` or not at all.
+  enforce FR-201; it is enforced in the proxy's own request path or not at all.
 
 ## Success criteria *(mandatory)*
 
@@ -247,14 +247,14 @@ No new flag and no new exit code. The proxy's answers to the client are:
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-201 | `refuses_to_relay_to_a_service_on_host_loopback`, `refuses_to_relay_to_the_cloud_metadata_address` (`tests/cli.rs`); `restricts_every_range_the_sandbox_denies_directly` (`src/proxy.rs`) |
+| FR-201 | `refuses_to_relay_to_a_service_on_host_loopback`, `refuses_to_relay_to_the_cloud_metadata_address` (`tests/cli.rs`); `restricts_every_range_the_sandbox_denies_directly`, `relays_to_ordinary_public_addresses` (`src/egress.rs`) |
 | FR-202 | `refuses_to_relay_to_a_service_on_host_loopback` (`tests/cli.rs`) asserts the stderr line |
-| FR-203 | `refuses_a_local_client_without_the_invocation_credential` (`tests/cli.rs`); `routes_http_egress_through_the_proxy` (`tests/cli.rs`) proves the child's own request is accepted; `publishes_a_credential_the_child_can_present` (`src/proxy.rs`) |
-| FR-204 | `strips_the_credential_from_a_relayed_request` (`src/proxy.rs`) |
-| FR-205 | `relays_to_host_loopback_when_private_egress_is_allowed` (`tests/cli.rs`) |
-| FR-206 | `restricts_a_hostname_that_resolves_into_a_restricted_range` (`src/proxy.rs`); the metadata test covers CONNECT-free absolute form, `refuses_a_local_client_without_the_invocation_credential` exercises `CONNECT` |
-| NFR-201 | `publishes_a_credential_the_child_can_present` (`src/proxy.rs`) — 128 bits, hex, different between two `serve` calls |
-| NFR-202 | `refuses_to_relay_to_the_cloud_metadata_address` (`tests/cli.rs`) returns immediately rather than timing out, which it could only do without a connection attempt |
+| FR-203 | `refuses_a_local_client_without_the_invocation_credential` (`tests/cli.rs`) for the refusal; `routes_http_egress_through_the_proxy` and `no_manual_proxy_configuration_needed` (`tests/cli.rs`) for the child being accepted without configuring anything; `publishes_a_secret_the_child_can_present`, `expects_what_a_client_reading_the_proxy_url_sends`, `encodes_base64_at_every_padding_length` (`src/credential.rs`) |
+| FR-204 | `relays_to_host_loopback_when_private_egress_is_allowed` (`tests/cli.rs`) — the origin echoes the request it received and it carries no `proxy-authorization` |
+| FR-205 | `relays_to_host_loopback_when_private_egress_is_allowed` (`tests/cli.rs`); `opens_private_egress_only_when_the_environment_asks_for_it`, `keeps_defaults_for_keys_a_config_file_omits` (`src/config.rs`) |
+| FR-206 | `restricts_a_hostname_that_resolves_into_a_restricted_range` (`src/egress.rs`); `reads_the_destination_a_request_names` (`src/proxy.rs`) covers both request forms and the bracketed IPv6 literal; `refuses_a_local_client_without_the_invocation_credential` exercises `CONNECT` |
+| NFR-201 | `publishes_a_secret_the_child_can_present` (`src/credential.rs`) — 128 bits, hex, different between two invocations |
+| NFR-202 | `refuses_to_relay_to_the_cloud_metadata_address` (`tests/cli.rs`) returns in well under the timeout, which it could only do without a connection attempt |
 
 ## Assumptions
 
@@ -279,16 +279,16 @@ None.
 
 ## Implementation tasks
 
-- [ ] **T-201** — `allow_private_egress` in `Config`, file key and environment override
+- [x] **T-201** — `allow_private_egress` in `Config`, file key and environment override
       (covers FR-205)
-- [ ] **T-202** — Refuse the restricted ranges in the proxy's `CONNECT` and forward paths,
+- [x] **T-202** — Refuse the restricted ranges in the proxy's `CONNECT` and forward paths,
       with the stderr diagnostic and the `403` body (covers FR-201, FR-202, FR-206)
-- [ ] **T-203** — Per-invocation credential: generated at `serve`, published in the child's
+- [x] **T-203** — Per-invocation credential: generated at `serve`, published in the child's
       proxy URL, required on every request, stripped before relaying (covers FR-203, FR-204,
       NFR-201)
-- [ ] **T-204** — Tests: unit tests for range classification, credential and header handling;
+- [x] **T-204** — Tests: unit tests for range classification, credential and header handling;
       integration tests for each refusal and for the opt-out (covers FR-201 … NFR-202)
-- [ ] **T-205** — README: the new key, what it re-opens, and the local-model recipe
+- [x] **T-205** — README: the new key, what it re-opens, and the local-model recipe
 
 ## Changelog
 
