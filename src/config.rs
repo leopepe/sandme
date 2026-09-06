@@ -27,6 +27,16 @@ pub struct Config {
     /// Defaults to `false` to preserve the strict security model.
     #[serde(default = "default_gui_mode")]
     pub gui_mode: bool,
+
+    /// Relay to destinations on the host's own networks (SPEC-0003 FR-205).
+    ///
+    /// When `true`, the proxy forwards to loopback, RFC1918, link-local,
+    /// unique-local and unspecified addresses, which a locally hosted service
+    /// — a local model server, a dev API — needs. Defaults to `false`: those
+    /// are exactly the destinations the sandbox profile denies the command
+    /// directly, and relaying to them turns the proxy into a pivot (issue #15).
+    #[serde(default = "default_allow_private_egress")]
+    pub allow_private_egress: bool,
 }
 
 impl Default for Config {
@@ -35,6 +45,7 @@ impl Default for Config {
             shared_paths: default_shared_paths(),
             proxy_port: default_proxy_port(),
             gui_mode: default_gui_mode(),
+            allow_private_egress: default_allow_private_egress(),
         }
     }
 }
@@ -54,6 +65,10 @@ fn default_proxy_port() -> u16 {
 }
 
 fn default_gui_mode() -> bool {
+    false
+}
+
+fn default_allow_private_egress() -> bool {
     false
 }
 
@@ -105,6 +120,10 @@ fn apply_env(config: &mut Config) {
 
     if let Ok(gui) = env::var("SANDME_GUI_MODE") {
         config.gui_mode = gui == "1" || gui.to_lowercase() == "true";
+    }
+
+    if let Ok(allow) = env::var("SANDME_ALLOW_PRIVATE_EGRESS") {
+        config.allow_private_egress = allow == "1" || allow.to_lowercase() == "true";
     }
 }
 
@@ -172,6 +191,7 @@ mod tests {
         assert_eq!(config.proxy_port, 9000);
         assert_eq!(config.shared_paths, vec!["~/".to_string()]);
         assert!(!config.gui_mode);
+        assert!(!config.allow_private_egress);
 
         // Restore HOME
         unsafe {
@@ -197,6 +217,7 @@ mod tests {
             shared_paths: vec!["/file".to_string()],
             proxy_port: 1234,
             gui_mode: false,
+            allow_private_egress: false,
         };
 
         // When the environment is applied
@@ -209,5 +230,33 @@ mod tests {
         // Then the environment wins and blank entries are dropped
         assert_eq!(config.shared_paths, vec!["/x", "/y"]);
         assert_eq!(config.proxy_port, 7070);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn opens_private_egress_only_when_the_environment_asks_for_it() {
+        // Given a default config and the opt-out set to each accepted spelling
+        // (one test owns this variable to keep the suite parallel-safe;
+        // the calls are safe here: this single test is its only writer)
+        for value in ["1", "true", "TRUE"] {
+            let mut config = Config::default();
+            unsafe { std::env::set_var("SANDME_ALLOW_PRIVATE_EGRESS", value) }
+
+            // When the environment is applied
+            apply_env(&mut config);
+
+            // Then the proxy is allowed to reach the host's own networks
+            assert!(config.allow_private_egress, "{value} should enable it");
+        }
+
+        // And anything else leaves the safe default in place: the setting
+        // re-opens the pivot in issue #15, so it takes an explicit yes
+        for value in ["0", "false", "yes", ""] {
+            let mut config = Config::default();
+            unsafe { std::env::set_var("SANDME_ALLOW_PRIVATE_EGRESS", value) }
+            apply_env(&mut config);
+            assert!(!config.allow_private_egress, "{value} should not enable it");
+        }
+        unsafe { std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS") }
     }
 }

@@ -76,6 +76,7 @@ environment always wins.
 | `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` | Paths the sandboxed command may **read and write**. `~/` expands to your home directory; symlinks are resolved. |
 | `proxy_port` | `SANDME_PROXY_PORT` | integer | `8787` | Loopback port the egress proxy listens on. `0` picks a free port — use it when running several `sandme` invocations at once. |
 | `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `~/Library`, `/private/tmp` and `/private/var/folders`. GUI apps and most editors need this for their state, caches and scratch space. |
+| `allow_private_egress` | `SANDME_ALLOW_PRIVATE_EGRESS` | boolean (env: `1` or `true`) | `false` | Lets the proxy relay to your own machine and network — loopback, RFC1918, link-local. Needed for a locally hosted service (a local model server, a dev API); see [Network](#what-the-sandbox-allows) for what it re-opens. |
 
 No config file is required — without one you get the defaults. A malformed file is reported
 rather than ignored.
@@ -121,8 +122,29 @@ listening sockets are all denied. `sandme` sets `HTTP_PROXY`, `HTTPS_PROXY` and 
 forms in the command's environment, so ordinary HTTP clients use the proxy without you configuring
 anything. HTTPS works through `CONNECT`.
 
-The proxy forwards traffic to its original destination without inspecting or filtering it. It
-mediates the route, not the policy.
+The proxy refuses to relay to the destinations the sandbox itself blocks: loopback
+(`127.0.0.0/8`, `::1`), RFC1918 (`10/8`, `172.16/12`, `192.168/16`), link-local (`169.254/16`,
+which includes the cloud metadata address `169.254.169.254`, and `fe80::/10`), unique-local
+(`fc00::/7`) and the unspecified addresses. A request for one of those gets `403` and a line on
+stderr saying so — hostnames included, so `localtest.me` and friends are refused too. Without
+this the proxy would reach every host-local and LAN service on your behalf, and the profile's
+network rule would describe the route rather than the confinement
+([#15](https://github.com/leopepe/sandme/issues/15)).
+
+If you are running a coding agent against a **local model server** — Ollama on
+`127.0.0.1:11434`, or any locally hosted API — turn that off explicitly:
+
+```shell
+SANDME_ALLOW_PRIVATE_EGRESS=1 SANDME_GUI_MODE=1 sandme claude
+```
+
+That re-opens the whole of your machine and LAN to the sandboxed command, which is the point of
+the setting and also its cost. It does not affect who may use the proxy.
+
+Each run's proxy also requires a credential, generated per invocation and published to the
+command in `HTTP_PROXY`/`HTTPS_PROXY`. Ordinary HTTP clients read it from there and send it, so
+nothing needs configuring; a request from any other local process gets `407`. Beyond
+destinations and that credential, the proxy does not inspect or filter what it relays.
 
 ## Recipes
 
@@ -264,7 +286,7 @@ Read these before trusting the sandbox with something hostile.
 | An app-bundle CLI wrapper is only redirected when it is the first word of the command; inside a compound shell string (`sandme 'cd ~/proj && zed .'`) it is left to the shell and fails. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Redirecting to the bundle executable loses the wrapper's own flags (`zed --wait`, `--version`) — the two binaries have different CLIs. Paths are unaffected. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
-| The proxy runs unsandboxed and forwards anywhere without filtering, including host-local and LAN services the sandbox itself blocks. | [#15](https://github.com/leopepe/sandme/issues/15) |
+| The proxy runs unsandboxed. It now refuses loopback, RFC1918 and link-local destinations and requires a per-run credential, but there is no destination allowlist, and `allow_private_egress` re-opens all of it at once. | [#15](https://github.com/leopepe/sandme/issues/15) |
 | `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
 
 ## Development
