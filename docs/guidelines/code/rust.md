@@ -37,8 +37,11 @@ added.
 - Rustdoc explains **why** the item exists and how to use it.
 - A `//` comment inside a body explains a non-obvious decision. Code needing a comment to
   explain **what** it does gets rewritten instead.
-- Examples in rustdoc are compiled by `cargo test`. A doc example that does not build is a
-  broken test.
+- Examples in rustdoc are **not** compiled in this package. Cargo builds doctests only for
+  library targets, and `sandme` is binary-only, so `cargo test --doc` exits with *no library
+  targets found* and `cargo test` never reaches them. Treat a rustdoc example as unverified
+  prose: it can rot without any command failing. If a library target is ever added,
+  `cargo test --doc` MUST join the gate — see `docs/guidelines/code/quality-gates.md` §2.
 - `cargo doc --no-deps` MUST produce no warnings — a broken intra-doc link is a broken
   reference.
 
