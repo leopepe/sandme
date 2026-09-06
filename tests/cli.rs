@@ -24,6 +24,7 @@ fn sandme(workdir: &Path) -> Command {
     cmd.env("HOME", workdir)
         .env("SANDME_PROXY_PORT", "0")
         .env_remove("SANDME_SHARED_PATHS")
+        .env_remove("SANDME_GUI_MODE")
         .current_dir(workdir);
     cmd
 }
@@ -146,6 +147,98 @@ fn denies_subprocess_access_outside_shared_paths() {
     assert!(!target.exists());
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&outside);
+}
+
+/// A scratch home whose path carries no symlink.
+///
+/// `workdir` reaches `$TMPDIR` through `/var`, which the kernel resolves to
+/// `/private/var`. A test that needs a *grant* to be the only thing standing
+/// between it and the file has to name the resolved form, or the grant misses
+/// and the test passes for the wrong reason.
+fn canonical_workdir(name: &str) -> PathBuf {
+    std::fs::canonicalize(workdir(name)).unwrap()
+}
+
+/// A `~/Library` populated the way a real one is, so a denial is proven by a
+/// refusal rather than by the path simply not being there.
+fn home_library(dir: &Path) -> PathBuf {
+    let library = dir.join("Library");
+    std::fs::create_dir_all(library.join("LaunchAgents")).unwrap();
+    std::fs::create_dir_all(library.join("Keychains")).unwrap();
+    std::fs::create_dir_all(library.join("Application Support")).unwrap();
+    std::fs::write(
+        library.join("Keychains").join("login.keychain-db"),
+        "keychain-bytes",
+    )
+    .unwrap();
+    library
+}
+
+#[test]
+fn denies_writing_a_launch_agent_even_when_the_whole_home_is_shared() {
+    // Given the widest configuration sandme offers — the default share of the
+    // whole home directory, plus GUI mode — and a real ~/Library/LaunchAgents.
+    // The home is reached through `/var`, so the denial only bites if it was
+    // built from the path the kernel resolves.
+    let dir = workdir("denies-writing-a-launch-agent");
+    let plist = home_library(&dir).join("LaunchAgents").join("probe.plist");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_SHARED_PATHS", "~/")
+        .env("SANDME_GUI_MODE", "1")
+        .args(["touch", &plist.display().to_string()]);
+
+    // When the sandboxed command tries to plant a launchd job
+    let status = cmd.status().unwrap();
+
+    // Then the sandbox refuses: a plist here would run outside the sandbox at
+    // the next login, so no configuration may grant it (issue #12)
+    assert!(!status.success());
+    assert!(!plist.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn denies_reading_the_keychains_even_when_the_whole_home_is_shared() {
+    // Given the whole home shared, GUI mode on, and a keychain to read
+    let dir = workdir("denies-reading-the-keychains");
+    let keychain = home_library(&dir)
+        .join("Keychains")
+        .join("login.keychain-db");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_SHARED_PATHS", "~/")
+        .env("SANDME_GUI_MODE", "1")
+        .args(["cat", &keychain.display().to_string()]);
+
+    // When the sandboxed command tries to read it
+    let output = cmd.output().unwrap();
+
+    // Then the sandbox refuses, and none of the keychain reaches the command
+    assert!(!output.status.success());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("keychain-bytes"));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn denies_the_home_library_when_gui_mode_is_off() {
+    // Given a narrow share that does not include ~/Library, and no GUI mode.
+    // The home is named in resolved form so that the grant this test proves
+    // absent would have matched had it been emitted.
+    let dir = canonical_workdir("denies-the-home-library-without-gui-mode");
+    let library = home_library(&dir);
+    let scratch = dir.join("scratch");
+    std::fs::create_dir_all(&scratch).unwrap();
+    let target = library.join("Application Support").join("probe.txt");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_SHARED_PATHS", scratch.display().to_string())
+        .args(["touch", &target.display().to_string()]);
+
+    // When the sandboxed command tries to write its state there
+    let status = cmd.status().unwrap();
+
+    // Then the sandbox refuses: ~/Library is granted for GUI mode, not always
+    assert!(!status.success());
+    assert!(!target.exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
