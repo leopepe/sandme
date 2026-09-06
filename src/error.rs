@@ -7,7 +7,8 @@ use thiserror::Error;
 /// All errors a sandme invocation can fail with.
 ///
 /// Each variant is one cause the user can act on or that changes the message
-/// they need; causes handled identically share a variant.
+/// they need; causes handled identically share a variant. The exit status each
+/// one becomes is decided in one place, `main::failure_code` (SPEC-0004).
 #[derive(Debug, Error)]
 pub enum SandmeError {
     /// The configuration file exists but could not be read.

@@ -679,3 +679,97 @@ fn free_port() -> u16 {
         .unwrap()
         .port()
 }
+
+#[test]
+fn reports_a_malformed_config_with_the_reserved_status() {
+    // Given a config file that is not valid TOML
+    let dir = workdir("reports-a-malformed-config");
+    let config_dir = dir.join(".sandme");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(config_dir.join("config.toml"), "this is not toml {{{\n").unwrap();
+    let mut cmd = sandme(&dir);
+    cmd.args(["echo", "hi"]);
+
+    // When sandme is run
+    let output = cmd.output().unwrap();
+
+    // Then it exits with the status reserved for its own failures, and says on
+    // stderr that the failure was its own (FR-201, FR-202)
+    assert_eq!(output.status.code(), Some(125));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("sandme: config file could not be parsed"),
+        "expected a prefixed diagnostic naming the cause; got {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reports_a_proxy_that_cannot_bind_with_the_reserved_status() {
+    // Given a port already taken by someone else
+    let dir = workdir("reports-a-proxy-that-cannot-bind");
+    let port = free_port();
+    let holder = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
+        .expect("the port was free a moment ago");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_PROXY_PORT", port.to_string())
+        .args(["echo", "hi"]);
+
+    // When sandme is asked to put its proxy there
+    let output = cmd.output().unwrap();
+    drop(holder);
+
+    // Then the invocation fails with sandme's own status, not the command's
+    // (FR-201, FR-202)
+    assert_eq!(output.status.code(), Some(125));
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.starts_with("sandme: proxy could not listen on port"),
+        "expected a prefixed diagnostic naming the port; got {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn propagates_a_childs_own_reserved_status() {
+    // Given a command that chooses the reserved status for itself
+    let dir = workdir("propagates-a-childs-own-reserved-status");
+
+    let mut cmd = sandme(&dir);
+    cmd.args(["sh", "-c", "exit 125"]);
+
+    // When it is run under sandme
+    let output = cmd.output().unwrap();
+
+    // Then the status is passed through untouched: reserving a value binds
+    // sandme, not the command it wraps (FR-205)
+    assert_eq!(output.status.code(), Some(125));
+    assert!(
+        output.stderr.is_empty(),
+        "sandme spoke about a status it only forwarded: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn propagates_an_unexplained_exec_status() {
+    // Given a command that runs and chooses 71 — the status sandbox-exec uses
+    // for an exec failure — for itself
+    let dir = workdir("propagates-an-unexplained-exec-status");
+    let mut cmd = sandme(&dir);
+    cmd.args(["sh", "-c", "exit 71"]);
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then sandme leaves it alone: it reinterprets 71 only when it can show
+    // the command could not have run at all (FR-205)
+    assert_eq!(output.status.code(), Some(71));
+    assert!(
+        output.stderr.is_empty(),
+        "sandme explained a status it could not explain: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
