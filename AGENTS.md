@@ -61,3 +61,20 @@ its rules — a copy is a conflict waiting to happen.
 
 `/review-standards` audits the current change against every guideline in `docs/guidelines/`.
 Run it before proposing a change as complete.
+
+Some changes need a second, narrower review as well. Run it **before opening the PR**, while the
+change is still cheap to alter:
+
+| The change touches | Also run | Why this one |
+| --- | --- | --- |
+| `src/sandbox.rs` (the Seatbelt profile) or `src/proxy.rs` (egress) | `/security-audit` | These two files *are* the sandbox. A profile rule in the wrong order, or a proxy that forwards further than the profile allows, is the product failing while every test stays green. |
+| `docs/specs/` — a new spec, a delta, or a `Status` change | `spec-review` agent | Finds specs that contradict each other, requirements nothing implements, and behaviour no requirement covers. |
+| Module boundaries — a new module, a moved responsibility, a new trait or layer | `architecture-review` agent | Checks the change against accepted ADRs in `docs/adrs/` and against what each module is for. |
+| The startup path, async code, or anything with an `NFR-` budget | `performance-review` agent | Produces measurements. A performance claim with no numbers behind it is not a result. |
+
+Every one of these reports; none of them edits code. Fixing what they find is a separate step.
+
+**Nothing automates this.** There is no CI, no hook and no gate that invokes a review — this table
+is the trigger. When you hand work to a subagent, the table goes with the task: an agent that never
+reads this file will not run any of them, and "the agent did not know" is not a review having
+happened.
