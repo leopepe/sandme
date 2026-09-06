@@ -8,6 +8,7 @@ use crate::app_bundle;
 use crate::config::Config;
 use crate::error::SandmeError;
 use crate::executable;
+use crate::proxy;
 
 /// `sandbox-exec`'s exit status when it could not execute the command.
 ///
@@ -85,6 +86,15 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
 /// any of the three, so they are denied rather than left to configuration.
 const DENIED_HOME_LIBRARY_DIRECTORIES: [&str; 3] = ["Keychains", "LaunchAgents", "LaunchDaemons"];
 
+/// Directories under `$HOME` denied outright, whatever the configuration says.
+///
+/// `.sandme` holds the configuration that decides what the sandbox permits. A
+/// command able to write it cannot widen the run it is in — the profile is
+/// already loaded — but it sets the terms of the next one: `shared_paths = ["/"]`
+/// and `allow_private_egress = true` take effect the moment the user runs
+/// `sandme` again. The policy must not be writable by what it constrains.
+const DENIED_HOME_DIRECTORIES: [&str; 1] = [".sandme"];
+
 /// Append the read-write grants the configuration asks for (FR-004).
 ///
 /// These are the only rules in the profile that vary per invocation, which is
@@ -134,6 +144,10 @@ fn append_unconditional_denials(sbpl: &mut String) {
             sbpl,
             "(deny file-read* file-write* (subpath \"{home}/Library/{directory}\"))"
         );
+    }
+
+    for directory in DENIED_HOME_DIRECTORIES {
+        let _ = writeln!(sbpl, "(deny file-write* (subpath \"{home}/{directory}\"))");
     }
 }
 
@@ -226,12 +240,12 @@ fn single_quoted(text: &str) -> String {
 /// The profile is handed to `sandbox-exec -p`, so nothing sensitive
 /// touches a temp file. The command's egress is wired to the proxy
 /// without any configuration of its own (FR-006): `HTTP_PROXY`/
-/// `HTTPS_PROXY` point at `proxy`, and the profile allows no other
-/// network destination. Ctrl-C kills the child so sandme can shut down
-/// with it (T-007).
+/// `HTTPS_PROXY` carry the proxy's URL, credential and all (SPEC-0003
+/// FR-203), and the profile allows no other network destination. Ctrl-C
+/// kills the child so sandme can shut down with it (T-007).
 pub async fn run(
     config: &Config,
-    proxy: SocketAddr,
+    proxy: &proxy::Server,
     command: &[String],
 ) -> Result<ExitStatus, SandmeError> {
     // clap's required trailing operand guarantees at least one word.
@@ -250,8 +264,8 @@ pub async fn run(
         (program, rest.to_vec())
     };
 
-    let profile = generate_profile(config, proxy);
-    let proxy_url = format!("http://{proxy}");
+    let profile = generate_profile(config, proxy.addr());
+    let proxy_url = proxy.url();
 
     let mut child = tokio::process::Command::new("sandbox-exec")
         .arg("-p")
@@ -297,6 +311,7 @@ mod tests {
             shared_paths: paths.iter().map(|p| (*p).to_string()).collect(),
             proxy_port: 8787,
             gui_mode: false,
+            allow_private_egress: false,
         }
     }
 
@@ -380,6 +395,7 @@ mod tests {
         assert!(!generate_profile(&config_with(&[]), proxy).contains(&grant));
     }
 
+    // Serial for the same reason as the test above.
     #[test]
     #[serial_test::serial]
     fn denies_the_launchd_and_keychain_directories_after_every_grant() {
