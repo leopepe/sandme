@@ -25,6 +25,7 @@ fn sandme(workdir: &Path) -> Command {
         .env("SANDME_PROXY_PORT", "0")
         .env_remove("SANDME_SHARED_PATHS")
         .env_remove("SANDME_GUI_MODE")
+        .env_remove("SANDME_ALLOW_PRIVATE_EGRESS")
         .current_dir(workdir);
     cmd
 }
@@ -110,6 +111,10 @@ async fn routes_http_egress_through_the_proxy() {
 
     let dir = workdir("routes-http-egress-through-the-proxy");
     let mut cmd = sandme(&dir);
+    // The origin is on loopback, which the proxy refuses by default
+    // (SPEC-0003 FR-201), so this test opts out to keep its subject the
+    // routing rather than the destination policy.
+    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1");
     cmd.args([
         "curl",
         "-sS",
@@ -309,10 +314,12 @@ fn no_manual_proxy_configuration_needed() {
     let output = cmd.output().unwrap();
 
     // Then the proxy was configured automatically — the child has HTTP_PROXY
-    // set without the user configuring it (NFR-002)
+    // set without the user configuring it (NFR-002), and it carries this
+    // invocation's credential, so the child needs no configuration to
+    // authenticate either (SPEC-0003 FR-203)
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("http://127.0.0.1:"),
+        stdout.contains("http://sandme:") && stdout.contains("@127.0.0.1:"),
         "HTTP_PROXY should be set automatically; got: {stdout:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
@@ -849,6 +856,216 @@ fn propagates_an_unexplained_exec_status() {
         output.stderr.is_empty(),
         "sandme explained a status it could not explain: {:?}",
         String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+
+// SPEC-0003 — the proxy refuses the destinations the sandbox denies the
+// command directly, and relays only for the invocation that started it.
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refuses_to_relay_to_a_service_on_host_loopback() {
+    // Given a host-only service on loopback, and a sandboxed command asking
+    // the proxy for it — the pivot reported in issue #15
+    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(serve_once(origin));
+
+    let dir = workdir("refuses-to-relay-to-host-loopback");
+    let mut cmd = sandme(&dir);
+    cmd.args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "10",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        &format!("http://127.0.0.1:{origin_port}/"),
+    ]);
+
+    // When the sandboxed command runs
+    let output = cmd.output().unwrap();
+
+    // Then the proxy answers 403, the service's content never reaches the
+    // command, and stderr names the setting that would permit it (FR-202)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stdout.trim(), "403", "stderr was: {stderr}");
+    assert!(!stdout.contains("served-through-proxy"));
+    assert!(
+        stderr.contains("proxy refused") && stderr.contains("allow_private_egress"),
+        "stderr should say what to change; got: {stderr}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn relays_to_host_loopback_when_private_egress_is_allowed() {
+    // Given the opt-out enabled — the local-model-server workflow — and an
+    // origin that echoes back the request it received
+    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(echo_request_once(origin));
+
+    let dir = workdir("relays-to-host-loopback-when-allowed");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "10",
+        &format!("http://127.0.0.1:{origin_port}/"),
+    ]);
+
+    // When the sandboxed command runs
+    let output = cmd.output().unwrap();
+
+    // Then the request is relayed, and the credential is not relayed with it:
+    // it authenticates the child to sandme and is no origin's business (FR-204)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("GET / HTTP/1.1"), "got: {stdout:?}");
+    assert!(
+        !stdout.to_lowercase().contains("proxy-authorization"),
+        "the origin should never see the credential; got: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn refuses_to_relay_to_the_cloud_metadata_address() {
+    // Given a sandboxed command asking the proxy for the link-local cloud
+    // metadata endpoint
+    let dir = workdir("refuses-to-relay-to-metadata");
+    let mut cmd = sandme(&dir);
+    cmd.args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "10",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "http://169.254.169.254/latest/meta-data/",
+    ]);
+
+    // When it runs
+    let started = std::time::Instant::now();
+    let output = cmd.output().unwrap();
+    let elapsed = started.elapsed();
+
+    // Then the proxy answers 403, and answers it without having tried to
+    // connect — a connection attempt to a link-local address hangs until it
+    // times out, so a prompt answer is the observable form of NFR-202
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "403");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the refusal should precede any connection attempt; took {elapsed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn refuses_a_local_client_without_the_invocation_credential() {
+    use std::io::{Read, Write};
+
+    // Given a sandme invocation in flight, and an unrelated local process —
+    // this test — talking to its proxy port with no credential
+    let dir = workdir("refuses-a-local-client-without-credential");
+    let (mut child, port) = start_with_live_proxy(&dir, &["sleep", "5"]);
+
+    // When it sends a plain request and a CONNECT, as any local process could
+    let answer = |request: &str| {
+        let mut stream =
+            std::net::TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        answer
+    };
+    let forwarded = answer(
+        "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
+    );
+    let tunnelled = answer(
+        "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nConnection: close\r\n\r\n",
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Then both are refused with 407 and nothing is relayed: the proxy is the
+    // child's, not the machine's (FR-203)
+    assert!(forwarded.starts_with("HTTP/1.1 407"), "got: {forwarded:?}");
+    assert!(tunnelled.starts_with("HTTP/1.1 407"), "got: {tunnelled:?}");
+    assert!(
+        forwarded
+            .to_lowercase()
+            .contains("proxy-authenticate: basic"),
+        "the refusal should carry the challenge; got: {forwarded:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Answer one HTTP request with the request itself, so a test can assert on
+/// the headers the origin received.
+async fn echo_request_once(listener: tokio::net::TcpListener) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let (mut stream, _) = listener.accept().await.unwrap();
+
+    let mut request = Vec::new();
+    let mut buf = [0_u8; 1024];
+    while !request.windows(4).any(|w| w == b"\r\n\r\n") {
+        let n = stream.read(&mut buf).await.unwrap_or(0);
+        if n == 0 {
+            break;
+        }
+        request.extend_from_slice(&buf[..n]);
+    }
+
+    let body = String::from_utf8_lossy(&request).to_string();
+    let response = format!(
+        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    stream.write_all(response.as_bytes()).await.unwrap();
+}
+
+#[test]
+fn denies_rewriting_sandmes_own_config_even_when_the_whole_home_is_shared() {
+    // Given the widest configuration sandme offers — the default share of the
+    // whole home directory, plus GUI mode — and an existing config file
+    let dir = workdir("denies-rewriting-its-own-config");
+    let config_dir = dir.join(".sandme");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    let config = config_dir.join("config.toml");
+    std::fs::write(&config, "proxy_port = 0\n").unwrap();
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_SHARED_PATHS", "~/")
+        .env("SANDME_GUI_MODE", "1")
+        .args([
+            "sh",
+            "-c",
+            "printf 'shared_paths = [\"/\"]\\n' > \"$HOME/.sandme/config.toml\"",
+        ]);
+
+    // When the sandboxed command tries to rewrite the policy that constrains it
+    let status = cmd.status().unwrap();
+
+    // Then the sandbox refuses, and the config it would have widened is intact.
+    // The current run could not be widened either way — the profile is already
+    // loaded — but the next one would start with the whole filesystem shared.
+    assert!(!status.success());
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "proxy_port = 0\n"
     );
     let _ = std::fs::remove_dir_all(&dir);
 }

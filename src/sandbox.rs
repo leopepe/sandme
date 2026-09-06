@@ -8,6 +8,7 @@ use crate::app_bundle;
 use crate::config::Config;
 use crate::error::SandmeError;
 use crate::executable;
+use crate::proxy;
 
 /// `sandbox-exec`'s exit status when it could not execute the command.
 ///
@@ -226,12 +227,12 @@ fn single_quoted(text: &str) -> String {
 /// The profile is handed to `sandbox-exec -p`, so nothing sensitive
 /// touches a temp file. The command's egress is wired to the proxy
 /// without any configuration of its own (FR-006): `HTTP_PROXY`/
-/// `HTTPS_PROXY` point at `proxy`, and the profile allows no other
-/// network destination. Ctrl-C kills the child so sandme can shut down
-/// with it (T-007).
+/// `HTTPS_PROXY` carry the proxy's URL, credential and all (SPEC-0003
+/// FR-203), and the profile allows no other network destination. Ctrl-C
+/// kills the child so sandme can shut down with it (T-007).
 pub async fn run(
     config: &Config,
-    proxy: SocketAddr,
+    proxy: &proxy::Server,
     command: &[String],
 ) -> Result<ExitStatus, SandmeError> {
     // clap's required trailing operand guarantees at least one word.
@@ -250,8 +251,8 @@ pub async fn run(
         (program, rest.to_vec())
     };
 
-    let profile = generate_profile(config, proxy);
-    let proxy_url = format!("http://{proxy}");
+    let profile = generate_profile(config, proxy.addr());
+    let proxy_url = proxy.url();
 
     let mut child = tokio::process::Command::new("sandbox-exec")
         .arg("-p")
@@ -297,6 +298,7 @@ mod tests {
             shared_paths: paths.iter().map(|p| (*p).to_string()).collect(),
             proxy_port: 8787,
             gui_mode: false,
+            allow_private_egress: false,
         }
     }
 
@@ -380,6 +382,7 @@ mod tests {
         assert!(!generate_profile(&config_with(&[]), proxy).contains(&grant));
     }
 
+    // Serial for the same reason as the test above.
     #[test]
     #[serial_test::serial]
     fn denies_the_launchd_and_keychain_directories_after_every_grant() {
