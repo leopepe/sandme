@@ -60,3 +60,25 @@ proxy_port = 8787
 # Default: false
 # ---------------------------------------------------------------------------
 gui_mode = true
+
+# ---------------------------------------------------------------------------
+# allow_private_egress  (env: SANDME_ALLOW_PRIVATE_EGRESS=1)
+#
+# Lets the proxy relay to your own machine and network: loopback (127.0.0.0/8,
+# ::1), RFC1918 (10/8, 172.16/12, 192.168/16), link-local (169.254/16 — which
+# includes the cloud metadata address 169.254.169.254 — and fe80::/10),
+# unique-local (fc00::/7) and the unspecified addresses.
+#
+# Off by default. Those are exactly the destinations the sandbox denies the
+# command directly, and the proxy runs outside the sandbox: relaying to them
+# turns it into a way around the profile's network rule, reachable by anything
+# running inside: https://github.com/leopepe/sandme/issues/15
+#
+# Turn it on when the command has to reach something local — a model server on
+# 127.0.0.1:11434, a dev API — and accept that it re-opens all of the above at
+# once. It does not change who may use the proxy: every request still needs the
+# credential sandme puts in the command's HTTP_PROXY.
+#
+# Default: false
+# ---------------------------------------------------------------------------
+allow_private_egress = false
