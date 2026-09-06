@@ -42,14 +42,20 @@ proxy_port = 8787
 # ---------------------------------------------------------------------------
 # gui_mode  (env: SANDME_GUI_MODE=1)
 #
-# Also grants read+write to /private/tmp and /private/var/folders.
+# Also grants read+write to ~/Library, /private/tmp and /private/var/folders.
 #
-# GUI applications and most editors need scratch space there. Without it Neovim
+# GUI applications and most editors keep state, caches and preferences under
+# ~/Library and need scratch space in the temp directories. Without it Neovim
 # starts but reports "tempdir create failed: operation not permitted" and loses
 # swap files, undo history and :terminal; Zed will not launch at all.
 #
-# The grant is not scoped to the launched app — it covers those directories for
-# every application: https://github.com/leopepe/sandme/issues/12
+# ~/Library/LaunchAgents, ~/Library/LaunchDaemons and ~/Library/Keychains stay
+# denied even here, and even when shared_paths lists your whole home directory.
+# A plist in either launchd directory runs outside the sandbox at your next
+# login.
+#
+# The temp grant is not scoped to the launched app — it covers those directories
+# for every application: https://github.com/leopepe/sandme/issues/12
 #
 # Default: false
 # ---------------------------------------------------------------------------
