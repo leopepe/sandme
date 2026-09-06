@@ -7,6 +7,16 @@ use std::process::ExitStatus;
 use crate::app_bundle;
 use crate::config::Config;
 use crate::error::SandmeError;
+use crate::executable;
+
+/// `sandbox-exec`'s exit status when it could not execute the command.
+///
+/// It answers this one value — `EX_OSERR` from `sysexits.h` — for every
+/// `execvp` failure, naming the cause only in a message on the child's
+/// stderr, so the status alone tells the caller nothing the exec-wrapper
+/// convention recognises. sandme translates it where it can establish the
+/// cause itself (SPEC-0004).
+const EXEC_FAILED: i32 = 71;
 
 /// Generate the Seatbelt (SBPL) profile applied to the sandboxed command.
 ///
@@ -263,6 +273,17 @@ pub async fn run(
         }
     };
 
+    // `sandbox-exec` reached execvp and it failed. Which of the two failures
+    // posix.md §4 names it was is not in the status, so it is worked out from
+    // the filesystem; a 71 that resolution cannot explain — a profile that
+    // would not compile, or a command that ran and chose 71 for itself —
+    // passes through untouched (FR-203, FR-204).
+    if status.code() == Some(EXEC_FAILED)
+        && let Some(error) = executable::exec_failure(&program)
+    {
+        return Err(error);
+    }
+
     Ok(status)
 }
 
@@ -341,7 +362,12 @@ mod tests {
         assert!(profile.contains("/private/var/folders"));
     }
 
+    // `$HOME` is process-wide, and config.rs's tests reassign it while they
+    // run. This test and the next read it twice — once here, once inside the
+    // profile — and need both reads to see the same value, so they queue
+    // behind those (serial_test's default key is shared crate-wide).
     #[test]
+    #[serial_test::serial]
     fn grants_the_home_library_only_in_gui_mode() {
         let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
         let home = canonical_home().expect("cargo test runs with HOME set");
@@ -355,6 +381,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial]
     fn denies_the_launchd_and_keychain_directories_after_every_grant() {
         // Given the home directory shared read-write, as it is by default
         let profile = generate_profile(
