@@ -59,8 +59,9 @@ Every function, module, package and component MUST serve exactly one purpose.
 needs a comma splice, the unit does two things — split it.
 
 - `config.rs` loads configuration. It does not also validate paths against the filesystem.
-- `sandbox.rs` builds a profile and launches under it. If launching grows its own error
-  handling, retries and signal plumbing, it has become a second purpose and moves out.
+- `profile.rs` builds the Seatbelt profile. `sandbox.rs` launches a command under one it is
+  handed. These were one module until the sentence describing it needed an "and" — the test
+  above caught it, late, at 485 lines.
 
 A module's name is a claim about its purpose. Code that does not match the name belongs
 elsewhere; a module named `utils`, `helpers`, `common` or `misc` is a purpose that was never

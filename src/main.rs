@@ -67,9 +67,14 @@ async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
     // child must present (SPEC-0003/FR-302).
     let server = proxy::serve(&config)?;
 
+    // The profile is built here rather than inside `sandbox::run`, so that
+    // running a command under a profile does not require holding the config
+    // that produced it.
+    let profile = profile::generate_profile(&config, server.addr());
+
     // The server, not just its address: the child's proxy URL carries the
     // credential, so `run` needs both.
-    sandbox::run(&config, &server, command).await
+    sandbox::run(&profile, &server, command).await
     // `server` is dropped here: the proxy's lifetime follows the command's (T-007).
 }
 

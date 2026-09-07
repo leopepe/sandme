@@ -5,10 +5,8 @@
 use std::process::ExitStatus;
 
 use crate::app_bundle;
-use crate::config::Config;
 use crate::error::SandmeError;
 use crate::executable;
-use crate::profile::generate_profile;
 use crate::proxy;
 
 /// `sandbox-exec`'s exit status when it could not execute the command.
@@ -89,7 +87,7 @@ fn single_quoted(text: &str) -> String {
 /// FR-203), and the profile allows no other network destination. Ctrl-C
 /// kills the child so sandme can shut down with it (T-007).
 pub async fn run(
-    config: &Config,
+    profile: &str,
     proxy: &proxy::Server,
     command: &[String],
 ) -> Result<ExitStatus, SandmeError> {
@@ -109,12 +107,11 @@ pub async fn run(
         (program, rest.to_vec())
     };
 
-    let profile = generate_profile(config, proxy.addr());
     let proxy_url = proxy.url();
 
     let mut child = tokio::process::Command::new("sandbox-exec")
         .arg("-p")
-        .arg(&profile)
+        .arg(profile)
         .arg(&program)
         .args(&args)
         .env("HTTP_PROXY", &proxy_url)
