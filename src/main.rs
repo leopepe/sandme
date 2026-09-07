@@ -7,6 +7,7 @@ mod credential;
 mod egress;
 mod error;
 mod executable;
+mod profile;
 mod proxy;
 mod sandbox;
 
