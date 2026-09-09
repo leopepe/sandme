@@ -8,3 +8,9 @@
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
+
+# spec-kit scaffold. Never initialised here: the tree was a husk with no
+# memory/, templates/ or scripts/, and every speckit prompt depends on them.
+# Ignored so a partial `specify init` cannot creep into a commit. `docs/specs/`
+# is this repo's spec system.
+/.specify/
