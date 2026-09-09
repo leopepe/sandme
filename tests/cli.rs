@@ -1068,3 +1068,249 @@ fn denies_rewriting_sandmes_own_config_even_when_the_whole_home_is_shared() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- SPEC-0005: what a sandboxed command may see of the machine --------------
+
+unsafe extern "C" {
+    /// `sysctl(2)`. Declared here rather than pulled in as a dependency: two
+    /// calls in one test file do not justify a crate, and the signature is
+    /// fixed by the platform ABI.
+    fn sysctl(
+        name: *const i32,
+        namelen: u32,
+        oldp: *mut u8,
+        oldlenp: *mut usize,
+        newp: *const u8,
+        newlen: usize,
+    ) -> i32;
+
+    /// `sysctlbyname(3)`, for the reads the allowlist is written in terms of.
+    fn sysctlbyname(
+        name: *const u8,
+        oldp: *mut u8,
+        oldlenp: *mut usize,
+        newp: *const u8,
+        newlen: usize,
+    ) -> i32;
+}
+
+/// `CTL_KERN`, `KERN_PROCARGS2` — the MIB that answers a pid's arguments and
+/// environment. It takes the pid as its third element, so it can only be
+/// reached numerically: there is no name for a profile rule to deny.
+const KERN_PROCARGS2_MIB: [i32; 2] = [1, 49];
+
+/// The probe the two tests below run *inside* the sandbox (SPEC-0005).
+///
+/// Not a test of its own — it asserts nothing. The sandbox needs a program
+/// that makes the kernel calls under scrutiny, and this binary is the one
+/// program a test can be certain exists on the machine running it. Driven with
+/// `SANDME_PROBE_PID`, it asks for that pid's arguments and environment and
+/// prints whatever came back; with `SANDME_PROBE_SYSCTL`, it reads that sysctl
+/// by name and prints whether the kernel allowed it. `#[ignore]` keeps it out
+/// of an ordinary run, where it has nothing to do.
+#[test]
+#[ignore = "the probe the SPEC-0005 tests drive; not a test on its own"]
+fn probe() {
+    if let Ok(pid) = std::env::var("SANDME_PROBE_PID") {
+        print_process_arguments(pid.parse().expect("the driver passes a pid"));
+    }
+    if let Ok(name) = std::env::var("SANDME_PROBE_SYSCTL") {
+        print_sysctl(&name);
+    }
+}
+
+/// Ask the kernel for `pid`'s arguments and environment, and print what came
+/// back — or the refusal.
+fn print_process_arguments(pid: i32) {
+    let mib = [KERN_PROCARGS2_MIB[0], KERN_PROCARGS2_MIB[1], pid];
+    let mut len = 0_usize;
+
+    // Size query first, as any caller of this MIB must. It is also where the
+    // sandbox refuses, so nothing is read before the refusal.
+    let sized = unsafe {
+        sysctl(
+            mib.as_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &raw mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if sized != 0 {
+        println!("PROBE-DENIED {}", std::io::Error::last_os_error());
+        return;
+    }
+
+    let mut buf = vec![0_u8; len];
+    let read = unsafe {
+        sysctl(
+            mib.as_ptr(),
+            3,
+            buf.as_mut_ptr(),
+            &raw mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if read != 0 {
+        println!("PROBE-DENIED {}", std::io::Error::last_os_error());
+        return;
+    }
+
+    // The buffer is NUL-separated argv and environment. Printed as text so the
+    // driver can assert on the secret it planted, the way the filesystem tests
+    // assert on their marker bytes.
+    buf.truncate(len);
+    let text: String = buf
+        .iter()
+        .map(|&b| {
+            if b.is_ascii_graphic() || b == b' ' {
+                b as char
+            } else {
+                '\n'
+            }
+        })
+        .collect();
+    println!("PROBE-READ {len} bytes\n{text}");
+}
+
+/// Read one sysctl by name, and print whether the kernel allowed it.
+fn print_sysctl(name: &str) {
+    let name = std::ffi::CString::new(name).expect("a sysctl name has no NUL");
+    let mut buf = [0_u8; 4096];
+    let mut len = buf.len();
+    let read = unsafe {
+        sysctlbyname(
+            name.as_ptr().cast(),
+            buf.as_mut_ptr(),
+            &raw mut len,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if read == 0 {
+        println!("PROBE-SYSCTL-OK {len} bytes");
+    } else {
+        println!("PROBE-SYSCTL-DENIED {}", std::io::Error::last_os_error());
+    }
+}
+
+/// Run the probe above under sandme, with `variable=value` telling it what to
+/// ask the kernel for.
+///
+/// The probe binary lives under `target/`, which no default share reaches, so
+/// its directory is shared explicitly — read access is what executing it
+/// needs, and `shared_paths` is the only way the profile grants any.
+fn probe_under_sandme(dir: &Path, variable: &str, value: &str) -> std::process::Output {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let exe_dir = exe.parent().expect("the test binary is in a directory");
+    let mut cmd = sandme(dir);
+    cmd.env(
+        "SANDME_SHARED_PATHS",
+        format!("{},{}", dir.display(), exe_dir.display()),
+    )
+    .env(variable, value)
+    .args([
+        &exe.display().to_string(),
+        "--ignored",
+        "--exact",
+        "probe",
+        "--nocapture",
+    ]);
+    cmd.output().unwrap()
+}
+
+/// Run the probe directly, with no sandbox between it and the kernel.
+fn probe_unsandboxed(variable: &str, value: &str) -> std::process::Output {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    Command::new(exe)
+        .env(variable, value)
+        .args(["--ignored", "--exact", "probe", "--nocapture"])
+        .output()
+        .unwrap()
+}
+
+#[test]
+fn denies_reading_another_process_environment() {
+    // Given a process outside the sandbox holding a secret in its environment
+    // — a concurrent sandme run, which is where SPEC-0003/FR-203's proxy
+    // credential lives — and a probe that, unsandboxed, can read it
+    let dir = workdir("denies-reading-another-process-environment");
+    let marker = "sandme-test-host-secret-4f19c7";
+    let mut holder = Command::new(env!("CARGO_BIN_EXE_sandme"))
+        .env("HOME", &dir)
+        .env("SANDME_PROXY_PORT", "0")
+        .env("SANDME_TEST_HOST_SECRET", marker)
+        .args(["sleep", "20"])
+        .spawn()
+        .unwrap();
+    let holder_pid = holder.id().to_string();
+
+    let control = probe_unsandboxed("SANDME_PROBE_PID", &holder_pid);
+    let control_out = String::from_utf8_lossy(&control.stdout);
+    assert!(
+        control_out.contains(marker),
+        "the probe cannot read the holder's environment even outside the sandbox, \
+         so the assertion below would pass for the wrong reason: {control_out}"
+    );
+
+    // When a sandboxed command asks the kernel for that process's arguments
+    // and environment
+    let output = probe_under_sandme(&dir, "SANDME_PROBE_PID", &holder_pid);
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Then the kernel refuses, and the secret never reaches it
+    assert!(
+        stdout.contains("PROBE-DENIED"),
+        "expected the read to be refused, got: {stdout}"
+    );
+    assert!(!stdout.contains(marker), "the environment leaked: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn denies_a_sysctl_the_allowlist_does_not_name() {
+    // Given a sysctl that exists and that nothing in the measurement set asked
+    // for, so the allowlist does not name it
+    let dir = workdir("denies-a-sysctl-outside-the-allowlist");
+    let control = probe_unsandboxed("SANDME_PROBE_SYSCTL", "kern.maxfilesperproc");
+    assert!(
+        String::from_utf8_lossy(&control.stdout).contains("PROBE-SYSCTL-OK"),
+        "the name has to be readable outside the sandbox for the refusal below to mean anything"
+    );
+
+    // When a sandboxed command reads it
+    let output = probe_under_sandme(&dir, "SANDME_PROBE_SYSCTL", "kern.maxfilesperproc");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Then the kernel refuses
+    assert!(
+        stdout.contains("PROBE-SYSCTL-DENIED"),
+        "expected the read to be refused, got: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn grants_the_sysctls_ordinary_programs_read() {
+    // Given the CPU count, which every thread pool on the machine asks for
+    let dir = workdir("grants-the-sysctls-ordinary-programs-read");
+    let mut cmd = sandme(&dir);
+    cmd.args(["/usr/sbin/sysctl", "hw.ncpu"]);
+
+    // When a sandboxed command reads it through sysctl(8), which resolves the
+    // name through the kernel's own metadata subtree first
+    let output = cmd.output().unwrap();
+
+    // Then it gets an answer
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("hw.ncpu:"),
+        "expected a value, got: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}

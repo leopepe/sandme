@@ -3,6 +3,16 @@
 //! What the sandbox permits lives here; how the command is started lives in
 //! [`crate::sandbox`]. The split follows the one question each answers: this
 //! module decides policy, that one applies it.
+//!
+//! This file is over the 400-line limit in
+//! `docs/guidelines/code/simplicity.md` §2, and takes that guideline's escape
+//! hatch: fewer than 250 of those lines are the module, and the rest are its
+//! tests, which SPEC-0005 grew by one assertion per new requirement
+//! (FR-301 … FR-304). Both alternatives are worse than the overage. Splitting
+//! the module would need a second purpose to split along, and there is none —
+//! it decides what the sandbox permits, and nothing else. Moving the tests out
+//! of line would leave one module in six whose tests do not sit at its foot,
+//! against `docs/guidelines/code/consistency.md` §4.
 
 use std::fmt::Write;
 use std::net::SocketAddr;
@@ -15,6 +25,13 @@ use crate::config::Config;
 /// mechanics macOS needs to start, read-only access to the system runtime,
 /// read-write access to the shared paths, and network egress to the proxy
 /// and nothing else (FR-006).
+///
+/// What it may see of the machine and of other processes is narrow by name:
+/// the sysctls in [`READABLE_SYSCTL_NAMES`] and [`READABLE_SYSCTL_PREFIXES`]
+/// (FR-301), and process information for its own sandbox instance only
+/// (FR-302). Those two grants were unrestricted, and between them they
+/// returned any same-uid process's environment — every credential the user
+/// had passed to any other program (SPEC-0005, issue #31).
 ///
 /// The profile closes with the denials in [`DENIED_HOME_LIBRARY_DIRECTORIES`],
 /// which sit last because SBPL resolves a path against the *last* rule that
@@ -34,9 +51,8 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (deny default)\n\
          (allow process-exec)\n\
          (allow process-fork)\n\
-         (allow process-info-pidinfo)\n\
+         (allow process-info-pidinfo (target same-sandbox))\n\
          (allow signal (target self))\n\
-         (allow sysctl-read)\n\
          (allow mach-lookup)\n\
          (allow mach-register)\n\
          (allow mach-bootstrap)\n\
@@ -55,6 +71,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
     );
 
+    append_readable_sysctls(&mut sbpl);
     append_writable_grants(&mut sbpl, config);
 
     let _ = writeln!(
@@ -65,6 +82,57 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
 
     append_unconditional_denials(&mut sbpl);
     sbpl
+}
+
+/// Sysctl subtrees the sandboxed command may read (FR-301).
+///
+/// `hw.` carries the CPU and memory facts a thread pool sizes itself from, and
+/// the feature bits a runtime dispatches on; `machdep.cpu.` the CPU brand
+/// string; `net.` the routing table, without which Go's `net.Interfaces`
+/// returns an error — and the topology that exposes, `getifaddrs(3)` already
+/// exposes unmediated. `sysctl.` is the kernel's own metadata subtree, which
+/// every name-based read resolves through: without it `sysctl(8)` cannot report
+/// even a name this list grants. The values behind those names still have to
+/// pass this allowlist, reached by name or by numeric MIB (SPEC-0005).
+const READABLE_SYSCTL_PREFIXES: [&str; 4] = ["hw.", "machdep.cpu.", "net.", "sysctl."];
+
+/// Individual sysctl names the sandboxed command may read (FR-301).
+///
+/// Every name was requested by something in SPEC-0005's measurement set; names
+/// that merely looked necessary were left out. `kern.boottime` is load bearing
+/// beyond `uptime(1)`: Node's `os.uptime()` aborts the process without it.
+const READABLE_SYSCTL_NAMES: [&str; 13] = [
+    "kern.argmax",
+    "kern.bootargs",
+    "kern.boottime",
+    "kern.hostname",
+    "kern.iossupportversion",
+    "kern.osproductversion",
+    "kern.osrelease",
+    "kern.ostype",
+    "kern.osvariant_status",
+    "kern.osversion",
+    "kern.version",
+    "security.mac.lockdown_mode_state",
+    "vm.loadavg",
+];
+
+/// Append the sysctl reads the command is allowed, and no others (FR-301).
+///
+/// An allowlist rather than a blanket grant plus a denial, because the read
+/// this closes cannot be denied by name — `KERN_PROCARGS2` is reached through
+/// a numeric MIB carrying a pid — and because a blanket grant defeats every
+/// later rule that would take it back: SBPL's last-match-wins, which
+/// [`append_unconditional_denials`] relies on for paths, does not hold here.
+fn append_readable_sysctls(sbpl: &mut String) {
+    sbpl.push_str("(allow sysctl-read");
+    for prefix in READABLE_SYSCTL_PREFIXES {
+        let _ = write!(sbpl, " (sysctl-name-prefix \"{prefix}\")");
+    }
+    for name in READABLE_SYSCTL_NAMES {
+        let _ = write!(sbpl, " (sysctl-name \"{name}\")");
+    }
+    sbpl.push_str(")\n");
 }
 
 /// Directories under `~/Library` that no configuration may reach.
@@ -127,6 +195,14 @@ fn append_writable_grants(sbpl: &mut String, config: &Config) {
 /// straight back and the denial would silently do nothing for exactly the
 /// configuration most users run.
 fn append_unconditional_denials(sbpl: &mut String) {
+    // Stated before the home-relative denials, and before the early return
+    // below, because it does not depend on `$HOME` and must not be lost with
+    // it (FR-304). `(deny default)` does not cover this one: with both blanket
+    // grants narrowed and nothing else changed, the read that returns another
+    // process's environment still succeeds. Only the explicit rule refuses it
+    // (FR-303).
+    sbpl.push_str("(deny process-info*)\n");
+
     let Some(home) = canonical_home() else { return };
 
     for directory in DENIED_HOME_LIBRARY_DIRECTORIES {
@@ -181,10 +257,7 @@ mod tests {
 
     #[test]
     fn denies_everything_by_default() {
-        let profile = generate_profile(
-            &config_with(&[]),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-        );
+        let profile = base_profile();
 
         assert!(profile.starts_with("(version 1)\n(deny default)\n"));
     }
@@ -222,6 +295,15 @@ mod tests {
 
         assert!(profile.contains("(allow network-outbound (remote ip \"localhost:8787\"))"));
         assert!(!profile.contains("network-bind"));
+    }
+
+    /// The profile the default configuration produces: what most of these
+    /// tests assert against.
+    fn base_profile() -> String {
+        generate_profile(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        )
     }
 
     fn gui_config_with(paths: &[&str]) -> Config {
@@ -286,25 +368,74 @@ mod tests {
 
     #[test]
     fn grants_dev_fd_read_write() {
-        // Given the base profile, with no shared paths
-        let profile = generate_profile(
-            &config_with(&[]),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-        );
-
+        let profile = base_profile();
         // Then /dev/fd is readable and writable, so the `/dev/fd/N` paths a
         // shell hands to process substitution resolve
         assert!(profile.contains("(allow file-read* file-write* (subpath \"/dev/fd\"))"));
     }
 
     #[test]
-    fn grants_the_random_devices_read_only() {
-        // Given the base profile, with no shared paths
-        let profile = generate_profile(
-            &config_with(&[]),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
-        );
+    fn narrows_sysctl_reads_to_an_allowlist() {
+        let profile = base_profile();
+        // A blanket grant cannot be taken back by a later rule for this
+        // operation, so its absence is the whole of FR-301: with it present,
+        // every denial below is decoration.
+        assert!(!profile.contains("(allow sysctl-read)"));
 
+        for prefix in READABLE_SYSCTL_PREFIXES {
+            assert!(
+                profile.contains(&format!("(sysctl-name-prefix \"{prefix}\")")),
+                "profile does not grant the {prefix} subtree"
+            );
+        }
+        for name in READABLE_SYSCTL_NAMES {
+            assert!(
+                profile.contains(&format!("(sysctl-name \"{name}\")")),
+                "profile does not grant {name}"
+            );
+        }
+
+        // And the process table is not among them: `kern.proc` names the
+        // arguments and environment of other processes (issue #31).
+        assert!(!profile.contains("\"kern.proc"));
+    }
+
+    #[test]
+    fn grants_process_information_only_inside_the_sandbox() {
+        let profile = base_profile();
+        // Scoped to this sandbox instance (FR-302): `self` refuses a process
+        // its own child, and unscoped leaked the host's environment.
+        assert!(profile.contains("(allow process-info-pidinfo (target same-sandbox))"));
+        assert!(!profile.contains("(allow process-info-pidinfo)"));
+    }
+
+    #[test]
+    fn denies_every_ungranted_process_information_operation() {
+        let profile = base_profile();
+        // Stated, not left to `(deny default)`, which misses it (FR-303).
+        assert!(profile.contains("(deny process-info*)"));
+    }
+
+    // Serial for the same reason as the two tests above: it reassigns `$HOME`.
+    #[test]
+    #[serial_test::serial]
+    fn denies_process_information_without_a_home() {
+        // Given no `$HOME` to build the home-relative denials from
+        let original = std::env::var("HOME").ok();
+        unsafe { std::env::remove_var("HOME") };
+        let profile = base_profile();
+        if let Some(home) = original {
+            unsafe { std::env::set_var("HOME", home) };
+        }
+
+        // The denial that does not depend on `$HOME` survives its absence
+        // (FR-304): it precedes the early return the missing home triggers.
+        assert!(profile.contains("(deny process-info*)"));
+    }
+
+    #[test]
+    fn grants_the_random_devices_read_only() {
+        let profile = base_profile();
         // Then the random devices are readable, and nothing grants a write
         assert!(
             profile.contains(
