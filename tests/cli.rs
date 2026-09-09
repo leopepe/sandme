@@ -1205,19 +1205,29 @@ fn print_sysctl(name: &str) {
 fn probe_under_sandme(dir: &Path, variable: &str, value: &str) -> std::process::Output {
     let exe = std::env::current_exe().expect("the test binary knows its own path");
     let exe_dir = exe.parent().expect("the test binary is in a directory");
+    let shares = format!("{},{}", dir.display(), exe_dir.display());
+    probe_under_sandme_sharing(dir, &shares, variable, value)
+}
+
+/// Run the probe under sandme with `shares` as `shared_paths` verbatim, so a
+/// test can hand it a value that is not a path.
+fn probe_under_sandme_sharing(
+    dir: &Path,
+    shares: &str,
+    variable: &str,
+    value: &str,
+) -> std::process::Output {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
     let mut cmd = sandme(dir);
-    cmd.env(
-        "SANDME_SHARED_PATHS",
-        format!("{},{}", dir.display(), exe_dir.display()),
-    )
-    .env(variable, value)
-    .args([
-        &exe.display().to_string(),
-        "--ignored",
-        "--exact",
-        "probe",
-        "--nocapture",
-    ]);
+    cmd.env("SANDME_SHARED_PATHS", shares)
+        .env(variable, value)
+        .args([
+            &exe.display().to_string(),
+            "--ignored",
+            "--exact",
+            "probe",
+            "--nocapture",
+        ]);
     cmd.output().unwrap()
 }
 
@@ -1266,6 +1276,50 @@ fn denies_reading_another_process_environment() {
     assert!(
         stdout.contains("PROBE-DENIED"),
         "expected the read to be refused, got: {stdout}"
+    );
+    assert!(!stdout.contains(marker), "the environment leaked: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn denies_reading_another_process_environment_under_an_injected_grant() {
+    // Given the same host process holding a secret, and a `shared_paths` value
+    // that closes the `subpath` literal it is interpolated into and appends the
+    // two grants this profile narrows — an unscoped `(allow
+    // process-info-pidinfo)` and a blanket `(allow sysctl-read)`. Nothing
+    // escapes that value, so the profile compiles with the grants in it
+    // (reported in `.agents/reports/security-audit-2026-09-09.md`).
+    let dir = workdir("denies-reading-under-an-injected-grant");
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let exe_dir = exe.parent().expect("the test binary is in a directory");
+    let injected = format!(
+        "{}\")) (allow process-info-pidinfo) (allow sysctl-read) (allow file-read* (subpath \"{}",
+        dir.display(),
+        exe_dir.display()
+    );
+    let marker = "sandme-test-host-secret-b73e02";
+    let mut holder = Command::new(env!("CARGO_BIN_EXE_sandme"))
+        .env("HOME", &dir)
+        .env("SANDME_PROXY_PORT", "0")
+        .env("SANDME_TEST_HOST_SECRET", marker)
+        .args(["sleep", "20"])
+        .spawn()
+        .unwrap();
+    let holder_pid = holder.id().to_string();
+
+    // When a sandboxed command asks for that process's environment
+    let output = probe_under_sandme_sharing(&dir, &injected, "SANDME_PROBE_PID", &holder_pid);
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Then the kernel still refuses. A specific allow beats a wildcard denial
+    // whatever the order, so `(deny process-info*)` alone would have been
+    // defeated here; the denial of the same operation at its own specificity is
+    // what holds (FR-305).
+    assert!(
+        stdout.contains("PROBE-DENIED"),
+        "an injected grant reopened the read: {stdout}"
     );
     assert!(!stdout.contains(marker), "the environment leaked: {stdout}");
     let _ = std::fs::remove_dir_all(&dir);

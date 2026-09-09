@@ -157,8 +157,11 @@ your own — which returns that process's **whole environment**. A sandboxed age
 API key and token you had passed to anything else you were running, and send it out through the
 proxy's permitted egress. `ps -E` was blocked, which made the profile look tighter than it was;
 the kernel interface behind it was open. Fixed in
-[#31](https://github.com/leopepe/sandme/issues/31): the two grants are narrow by name, and the
-process-information denial is stated explicitly because `(deny default)` does not reach this one.
+[#31](https://github.com/leopepe/sandme/issues/31): the two grants are narrow by name, the
+process-information denial is stated explicitly because `(deny default)` does not reach this one,
+and both denials are repeated at a specificity no blanket grant can outrank — a specific `allow`
+beats a wildcard `deny` in SBPL whatever the order, so a rule that got into the profile by any
+other route cannot hand the read back.
 
 If a tool you sandbox needs a sysctl the allowlist does not name, it gets `EPERM`. The name is in
 the kernel log — `log show --last 2m --predicate 'eventMessage CONTAINS "deny(1) sysctl-read"'` —

@@ -127,6 +127,10 @@ compilers and agents behave, so that the security fix costs me no working recipe
 - `$HOME` cannot be resolved → the profile's home-relative denials cannot be written, but
   the denial FR-303 requires does not depend on `$HOME` and MUST still be emitted
   (FR-304).
+- A `shared_paths` value carries SBPL of its own → the profile compiles with the injected
+  rules in it, so the denials have to outrank a grant this repository did not write
+  (FR-305, FR-306). The injection itself is a separate defect, reported in
+  `.agents/reports/security-audit-2026-09-09.md` and not fixed here.
 - The target process is an Apple platform binary → the kernel already withholds its
   environment, whoever asks. That is not a property of this profile and this spec does not
   rely on it: the measured leak used a locally compiled holder, which is what a user's own
@@ -146,12 +150,19 @@ compilers and agents behave, so that the security fix costs me no working recipe
   process-information operation it does not grant.
 - **FR-304**: IF `$HOME` cannot be resolved THEN THE SYSTEM SHALL still emit the denial
   required by FR-303.
+- **FR-305**: THE SYSTEM SHALL deny `process-info-pidinfo` by name as well as through the
+  operation-family wildcard of FR-303.
+- **FR-306**: THE SYSTEM SHALL deny `sysctl-read` for every name under the `kern.procargs`
+  prefix, in addition to withholding it from the allowlist of FR-301.
 
 ### Non-functional
 
 - **NFR-301**: A sandboxed command SHALL NOT be able to read the arguments or environment
   of any process outside its own sandbox instance, including the process of another
-  concurrent sandme run.
+  concurrent sandme run, and SHALL NOT regain that read when the profile carries an
+  additional `(allow sysctl-read)` or `(allow process-info-pidinfo)` rule that no code in
+  this repository wrote — which `shared_paths` can inject, since
+  `append_writable_grants` interpolates it unescaped.
 - **NFR-302**: The allowlist required by FR-301 SHALL cover every sysctl name requested by
   the shipped recipes and by ordinary development tooling, such that all 40 commands in the
   measurement set exit with the same status under the narrowed profile as under the
@@ -172,6 +183,14 @@ compilers and agents behave, so that the security fix costs me no working recipe
 - SBPL's last-match-wins rule, which SPEC-0002/NFR-101 relies on for path rules, does not
   hold for these operations: a blanket `(allow sysctl-read)` earlier in the profile defeats
   every later denial of this read. The grants have to be narrow where they are written.
+- Last-match-wins holds only between rules of **equal specificity**. A specific allow beats
+  a wildcard denial of the family it belongs to, whatever their order — so
+  `(allow process-info-pidinfo)` anywhere in the profile defeats `(deny process-info*)`
+  everywhere in it. This cuts both ways, and FR-305 and FR-306 use it: a rule denying an
+  operation at its own specificity, or a sysctl by name prefix, outranks a blanket grant and
+  ties with a specific one, where its later position decides. It is also why the scoped
+  grant of FR-302 survives FR-305's unscoped denial — `(target same-sandbox)` is the more
+  specific of the two.
 
 ## Success criteria *(mandatory)*
 
@@ -182,6 +201,8 @@ compilers and agents behave, so that the security fix costs me no working recipe
   change, and `cargo build` completes inside the sandbox.
 - **SC-003**: A sandboxed command can still read its own process information and that of a
   process it started inside the sandbox.
+- **SC-004**: SC-001 still holds when the profile carries an injected `(allow sysctl-read)`
+  and an unscoped `(allow process-info-pidinfo)`.
 
 ## Verification
 
@@ -191,6 +212,7 @@ compilers and agents behave, so that the security fix costs me no working recipe
 | FR-302 | `grants_process_information_only_inside_the_sandbox` (`src/profile.rs`); `denies_reading_another_process_environment` (`tests/cli.rs`) |
 | FR-303 | `denies_every_ungranted_process_information_operation` (`src/profile.rs`) |
 | FR-304 | `denies_process_information_without_a_home` (`src/profile.rs`) |
+| FR-305, FR-306 | `denies_every_ungranted_process_information_operation` (`src/profile.rs`) asserts both rules; `denies_reading_another_process_environment_under_an_injected_grant` (`tests/cli.rs`) proves them against the kernel, with a `shared_paths` value that injects the two grants this spec narrows |
 | NFR-301 | `denies_reading_another_process_environment` (`tests/cli.rs`). The process it reads from is a concurrent sandme run, so the cross-run clause is the same test. Its control run — the same probe, unsandboxed — must leak, or the assertion would pass for the wrong reason; both integration tests assert their control first, and both fail against the profile as it was |
 | NFR-302 | Measurement procedure below, re-runnable; result recorded there with the date and OS build |
 
@@ -252,6 +274,15 @@ That is how the allowlist was derived, and how it should be extended.
   `children` refuses a grandchild, while `same-sandbox` covers the command's own process
   tree and stops at the sandbox boundary — including the boundary between two concurrent
   sandme runs.
+- **FR-305 and FR-306 come from [PR #39](https://github.com/leopepe/sandme/pull/39)**, an
+  independent fix for the same issue. Its route is a `kern.procargs` prefix denial plus a
+  denial of `process-info-pidinfo` at its own specificity, keeping the blanket
+  `(allow sysctl-read)`. Measured here: without those two rules this spec's allowlist is
+  bypassable — a `shared_paths` value injecting `(allow sysctl-read)` and
+  `(allow process-info-pidinfo)` restores the leak in full, and PR #39's profile refuses it.
+  Both are adopted. The reverse also holds and is why the allowlist stays: PR #39's profile
+  leaves 1844 sysctl values readable where this one leaves 798, including `kern.proc.all`,
+  the whole process table.
 - **The allowlist is expected to need extending.** It was measured on one machine, one OS
   build and one set of tools. A user hitting `EPERM` on a sysctl is a bug report with the
   name in it, and the fix is a spec delta plus a line.
@@ -271,9 +302,13 @@ None.
       unsandboxed control that gives the assertion meaning, and the cross-run case
       (covers NFR-301)
 - [x] **T-004** — Run the NFR-302 measurement and record the result (covers NFR-302)
+- [x] **T-005** — Deny the operation at its own specificity and the `kern.procargs` prefix by
+      name, so an injected grant cannot outrank the denials, with the integration test that
+      proves it (covers FR-305, FR-306, NFR-301)
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
+| 2026-09-09 | FR-305 and FR-306 added, adopted from [PR #39](https://github.com/leopepe/sandme/pull/39) after measuring that this spec's allowlist alone is bypassable through an injected `shared_paths` grant. Measurement re-run with them in place: still 40 of 40 commands unchanged in exit status, 37 byte-identical. |
 | 2026-09-09 | Initial draft, from [#31](https://github.com/leopepe/sandme/issues/31). Status `Review`: the profile is observable behaviour and the change is presented for approval together with its implementation, as SPEC-0004 was. NFR-302 measured on macOS 26 (Darwin 25.6.0, Apple silicon, arm64): 40 of 40 commands unchanged in exit status, 37 byte-identical. Startup was measured too, though no budget requires it — SPEC-0001/NFR-003 is withdrawn: 11.7 ms median before, 11.6 ms after, 21 runs each, `sandme /usr/bin/true` — no change beyond noise. |

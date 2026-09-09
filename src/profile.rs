@@ -8,7 +8,7 @@
 //! `docs/guidelines/code/simplicity.md` §2, and takes that guideline's escape
 //! hatch: fewer than 250 of those lines are the module, and the rest are its
 //! tests, which SPEC-0005 grew by one assertion per new requirement
-//! (FR-301 … FR-304). Both alternatives are worse than the overage. Splitting
+//! (FR-301 … FR-306). Both alternatives are worse than the overage. Splitting
 //! the module would need a second purpose to split along, and there is none —
 //! it decides what the sandbox permits, and nothing else. Moving the tests out
 //! of line would leave one module in six whose tests do not sit at its foot,
@@ -203,6 +203,30 @@ fn append_unconditional_denials(sbpl: &mut String) {
     // (FR-303).
     sbpl.push_str("(deny process-info*)\n");
 
+    // The allowlist above already refuses every `kern.procargs` read, and this
+    // says so again at a specificity no blanket grant can outrank (FR-306). It
+    // is not redundant: `append_writable_grants` interpolates `shared_paths`
+    // without escaping, so an injected `(allow sysctl-read)` restores the whole
+    // tree and defeats the allowlist. A name-filtered denial is more specific
+    // than that blanket grant, so this rule decides the read instead.
+    //
+    // Found by PR #39, which closes the same issue by this route.
+    sbpl.push_str("(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n");
+
+    // And the same operation named at its own specificity (FR-305). The rule
+    // above is a wildcard, and a wildcard loses to any specific allow of a
+    // member operation whatever the order — including one an attacker injects
+    // through `shared_paths`, which `append_writable_grants` interpolates
+    // without escaping. Measured: with only the wildcard denial, a
+    // `shared_paths` entry carrying `(allow process-info-pidinfo)` reopens the
+    // leak in full. This rule ties with such an allow on specificity, so its
+    // later position decides it. The template's own scoped grant is *more*
+    // specific than this one and survives, which is what keeps a command's
+    // reads of its own process tree working.
+    //
+    // Found by PR #39, which closes the same issue by a different route.
+    sbpl.push_str("(deny process-info-pidinfo)\n");
+
     let Some(home) = canonical_home() else { return };
 
     for directory in DENIED_HOME_LIBRARY_DIRECTORIES {
@@ -396,8 +420,14 @@ mod tests {
         }
 
         // And the process table is not among them: `kern.proc` names the
-        // arguments and environment of other processes (issue #31).
-        assert!(!profile.contains("\"kern.proc"));
+        // arguments and environment of other processes (issue #31). Asserted
+        // against the grant alone — the denials below it name that prefix on
+        // purpose.
+        let grant = profile
+            .lines()
+            .find(|line| line.starts_with("(allow sysctl-read"))
+            .expect("the profile grants some sysctl reads");
+        assert!(!grant.contains("\"kern.proc"));
     }
 
     #[test]
@@ -414,6 +444,13 @@ mod tests {
         let profile = base_profile();
         // Stated, not left to `(deny default)`, which misses it (FR-303).
         assert!(profile.contains("(deny process-info*)"));
+
+        // And denied at its own specificity as well (FR-305), so a specific
+        // allow injected through `shared_paths` ties with it instead of
+        // winning. Deleting either of these two reopens the leak under
+        // injection while every other assertion here still passes.
+        assert!(profile.contains("(deny process-info-pidinfo)"));
+        assert!(profile.contains("(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))"));
     }
 
     // Serial for the same reason as the two tests above: it reassigns `$HOME`.
