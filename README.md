@@ -146,6 +146,24 @@ command in `HTTP_PROXY`/`HTTPS_PROXY`. Ordinary HTTP clients read it from there 
 nothing needs configuring; a request from any other local process gets `407`. Beyond
 destinations and that credential, the proxy does not inspect or filter what it relays.
 
+**Other processes, and the kernel.** The command sees process information for its own sandbox —
+itself and anything it starts — and nothing about the processes running outside it. It reads a
+fixed allowlist of sysctls: the `hw.`, `machdep.cpu.`, `net.` and `sysctl.` subtrees, and the
+handful of `kern.*` names ordinary programs ask for (OS version, hostname, boot time, `argmax`).
+`sysctl -a` shows 798 values inside the sandbox where it shows 1844 outside.
+
+Both used to be unrestricted, and between them they answered `KERN_PROCARGS2` for any process of
+your own — which returns that process's **whole environment**. A sandboxed agent could read every
+API key and token you had passed to anything else you were running, and send it out through the
+proxy's permitted egress. `ps -E` was blocked, which made the profile look tighter than it was;
+the kernel interface behind it was open. Fixed in
+[#31](https://github.com/leopepe/sandme/issues/31): the two grants are narrow by name, and the
+process-information denial is stated explicitly because `(deny default)` does not reach this one.
+
+If a tool you sandbox needs a sysctl the allowlist does not name, it gets `EPERM`. The name is in
+the kernel log — `log show --last 2m --predicate 'eventMessage CONTAINS "deny(1) sysctl-read"'` —
+and that name is what a bug report needs.
+
 ## Recipes
 
 Each of these is verified against the current build on macOS 26 (Apple silicon).
