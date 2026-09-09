@@ -222,7 +222,10 @@ fn append_unconditional_denials(sbpl: &mut String) {
     // leak in full. This rule ties with such an allow on specificity, so its
     // later position decides it. The template's own scoped grant is *more*
     // specific than this one and survives, which is what keeps a command's
-    // reads of its own process tree working.
+    // reads of its own process tree working — and by the same rule a
+    // *filtered* injected allow, `(target others)`, outranks this denial and
+    // gets the read back. Injection is the defect (issue #41); this rule only
+    // takes the simplest payload away from it.
     //
     // Found by PR #39, which closes the same issue by a different route.
     sbpl.push_str("(deny process-info-pidinfo)\n");

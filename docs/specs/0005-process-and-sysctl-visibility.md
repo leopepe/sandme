@@ -160,9 +160,10 @@ compilers and agents behave, so that the security fix costs me no working recipe
 - **NFR-301**: A sandboxed command SHALL NOT be able to read the arguments or environment
   of any process outside its own sandbox instance, including the process of another
   concurrent sandme run, and SHALL NOT regain that read when the profile carries an
-  additional `(allow sysctl-read)` or `(allow process-info-pidinfo)` rule that no code in
-  this repository wrote — which `shared_paths` can inject, since
-  `append_writable_grants` interpolates it unescaped.
+  additional *unscoped* `(allow sysctl-read)` or `(allow process-info-pidinfo)` rule that no
+  code in this repository wrote — which `shared_paths` can inject, since
+  `append_writable_grants` interpolates it unescaped. A *filtered* injected grant is out of
+  scope; see the limitation below.
 - **NFR-302**: The allowlist required by FR-301 SHALL cover every sysctl name requested by
   the shipped recipes and by ordinary development tooling, such that all 40 commands in the
   measurement set exit with the same status under the narrowed profile as under the
@@ -286,6 +287,22 @@ That is how the allowlist was derived, and how it should be extended.
 - **The allowlist is expected to need extending.** It was measured on one machine, one OS
   build and one set of tools. A user hitting `EPERM` on a sysctl is a bug report with the
   name in it, and the fix is a spec delta plus a line.
+
+## Known limitation
+
+FR-305 and FR-306 make this spec's rules hard to outrank; they do not fix SBPL injection, and
+they do not survive every injected grant. Measured: a single `shared_paths` value carrying
+`(allow process-info-pidinfo (target others))` reopens the read in full, because a *filtered*
+allow is more specific than FR-305's unscoped denial and wins on specificity whatever its
+position — the same rule that keeps FR-302's `(target same-sandbox)` grant alive. The
+allowlist of FR-301 does not save it either: the process-information side alone is sufficient
+for the read.
+
+The injection itself is the defect, filed as
+[#41](https://github.com/leopepe/sandme/issues/41) and out of scope here. Until it is fixed,
+NFR-301 holds against an unscoped injected grant and not against a filtered one. What FR-305
+and FR-306 buy is that the profile no longer hands the read back to the *simplest* injected
+payload, and that no rule this repository writes can defeat the denials.
 
 ## Open questions
 
