@@ -1,40 +1,36 @@
 //! Generation of the Seatbelt (SBPL) profile applied to the sandboxed command.
 //!
-//! What the sandbox permits lives here; how the command is started lives in
-//! [`crate::sandbox`]. The split follows the one question each answers: this
-//! module decides policy, that one applies it.
+//! This module decides what the sandbox permits. Launching a command under a
+//! profile is [`crate::sandbox`].
 
 use std::fmt::Write;
 use std::net::SocketAddr;
 
 use crate::config::Config;
 
-/// Generate the Seatbelt (SBPL) profile applied to the sandboxed command.
+/// Build the Seatbelt (SBPL) profile for one invocation.
 ///
-/// Everything is denied by default (FR-004): the command keeps the process
-/// mechanics macOS needs to start, read-only access to the system runtime,
-/// read-write access to the shared paths, and network egress to the proxy
-/// and nothing else (FR-006).
+/// `config` supplies the paths to share and whether GUI mode is on; `proxy` is
+/// the address the egress proxy listens on, and the only destination the
+/// profile permits.
 ///
-/// The profile closes with the denials in [`DENIED_HOME_LIBRARY_DIRECTORIES`],
-/// which sit last because SBPL resolves a path against the *last* rule that
-/// matches it. Anything appended after them could grant them back.
+/// Returns the complete profile text: everything denied by default, then the
+/// process and file-read grants a command needs to start, the configuration's
+/// read-write shares, egress to `proxy`, and last the denials no configuration
+/// can lift. Process information is limited to the command's own sandbox
+/// instance, which is what keeps another process's environment out of reach
+/// (issue #31).
 ///
-/// `/dev/fd` sits with the other device rules because shells implement
-/// process substitution — `cat <(echo hi)` — by handing the child a
-/// `/dev/fd/N` path. Such a path only names a descriptor the process already
-/// holds, so allowing it grants no access the process did not already have:
-/// it is not a widening of the sandbox the way a path grant is. `/dev/stdin`,
-/// `/dev/stdout` and `/dev/stderr` are symlinks into `/dev/fd` and need no
-/// rule of their own. `/dev/random` and `/dev/urandom` are the same generator
-/// on macOS, are read-only here, and are denied without an explicit rule.
+/// Nothing may be appended to the result. SBPL resolves a path against the
+/// last matching rule, so a rule added after the closing denials would grant
+/// their paths back.
 pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
     let mut sbpl = String::from(
         "(version 1)\n\
          (deny default)\n\
          (allow process-exec)\n\
          (allow process-fork)\n\
-         (allow process-info-pidinfo)\n\
+         (allow process-info-pidinfo (target same-sandbox))\n\
          (allow signal (target self))\n\
          (allow sysctl-read)\n\
          (allow mach-lookup)\n\
@@ -70,25 +66,25 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
 /// Directories under `~/Library` that no configuration may reach.
 ///
 /// `LaunchAgents` and `LaunchDaemons` are launchd's job directories: a plist
-/// written to either one is executed at the next login *outside* the sandbox,
-/// which turns any writable share into a persistence escape (issue #12).
-/// `Keychains` holds the login keychain. An editor or agent has no business in
-/// any of the three, so they are denied rather than left to configuration.
+/// written to either runs at the next login, outside the sandbox, so a
+/// writable share of one is a persistence escape. `Keychains` holds the login
+/// keychain (issue #12).
 const DENIED_HOME_LIBRARY_DIRECTORIES: [&str; 3] = ["Keychains", "LaunchAgents", "LaunchDaemons"];
 
-/// Directories under `$HOME` denied outright, whatever the configuration says.
+/// Directories under `$HOME` denied write access, whatever the configuration
+/// says.
 ///
-/// `.sandme` holds the configuration that decides what the sandbox permits. A
-/// command able to write it cannot widen the run it is in — the profile is
-/// already loaded — but it sets the terms of the next one: `shared_paths = ["/"]`
-/// and `allow_private_egress = true` take effect the moment the user runs
-/// `sandme` again. The policy must not be writable by what it constrains.
+/// `.sandme` holds the configuration that decides what the sandbox permits.
+/// Writing it cannot widen the current run, whose profile is already loaded,
+/// but it sets the terms of the next one.
 const DENIED_HOME_DIRECTORIES: [&str; 1] = [".sandme"];
 
-/// Append the read-write grants the configuration asks for (FR-004).
+/// Append the read-write grants the configuration asks for.
 ///
-/// These are the only rules in the profile that vary per invocation, which is
-/// why they live apart from the fixed template above.
+/// Writes one rule per entry in `config.shared_paths`, with `~` expanded and
+/// symlinks resolved, and — when `config.gui_mode` is set — the state and
+/// scratch directories GUI applications need. These are the only rules in the
+/// profile that vary per invocation.
 fn append_writable_grants(sbpl: &mut String, config: &Config) {
     for path in &config.shared_paths {
         let expanded = expand_path(path);
@@ -122,11 +118,35 @@ fn append_writable_grants(sbpl: &mut String, config: &Config) {
 
 /// Append the denials no configuration may lift.
 ///
-/// SBPL is last-match-wins, so these MUST be the profile's final rules. Emitted
-/// any earlier, the default `shared_paths = ["~/"]` would grant `~/Library`
-/// straight back and the denial would silently do nothing for exactly the
-/// configuration most users run.
+/// Writes the process-information and `kern.procargs` denials, then the
+/// home-relative path denials. The path denials are skipped when `$HOME` does
+/// not resolve; the others are written first so they are not lost with it.
+///
+/// Must be called last. SBPL is last-match-wins for paths, so emitted any
+/// earlier the default `shared_paths = ["~/"]` grants `~/Library` straight
+/// back and the denial does nothing.
 fn append_unconditional_denials(sbpl: &mut String) {
+    // `kern.procargs2` returns any same-uid process's environment, so reading
+    // it hands the command every credential the user gave any other program
+    // (issue #31). All three rules are needed and each looks redundant beside
+    // the others: `(deny default)` does not reach this read, the wildcard does
+    // not survive a specific allow, and the named denial does not cover the
+    // rest of the family. Measured on macOS 26 — drop any one and the read
+    // succeeds.
+    //
+    // SBPL prefers a *specific* allow to a *wildcard* deny whatever the rule
+    // order, so `(deny process-info*)` alone is defeated by any unscoped
+    // `(allow process-info-pidinfo)` — including one injected through
+    // `shared_paths`, which `append_writable_grants` interpolates unescaped
+    // (issue #41). Denying the operation at its own specificity ties with such
+    // an allow, leaving last-match-wins to decide it, and still yields to the
+    // more specific `(target same-sandbox)` grant above.
+    //
+    // Stated before the early return below, which must not drop them.
+    sbpl.push_str("(deny process-info*)\n");
+    sbpl.push_str("(deny process-info-pidinfo)\n");
+    sbpl.push_str("(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n");
+
     let Some(home) = canonical_home() else { return };
 
     for directory in DENIED_HOME_LIBRARY_DIRECTORIES {
@@ -141,19 +161,21 @@ fn append_unconditional_denials(sbpl: &mut String) {
     }
 }
 
-/// The home directory as the kernel sees it: `$HOME` with symlinks resolved.
+/// The home directory as the kernel sees it.
 ///
-/// A rule written from the raw `$HOME` would not match a canonicalised
-/// `shared_paths` entry naming the same directory — `/var/…` and
-/// `/private/var/…` are the same place but not the same subpath — and a denial
-/// that does not match is a denial that does not deny.
+/// Returns `$HOME` with symlinks resolved, the raw value if it cannot be
+/// resolved, or `None` if `$HOME` is unset. Rules must be written from the
+/// resolved form: `/var/…` and `/private/var/…` are the same directory but not
+/// the same subpath, and a denial that does not match does not deny.
 fn canonical_home() -> Option<String> {
     let home = std::env::var("HOME").ok()?;
     Some(std::fs::canonicalize(&home).map_or(home, |resolved| resolved.display().to_string()))
 }
 
-/// Expand a path starting with ~ to the home directory, and resolve
-/// symlinks so the profile matches the kernel's view of the path.
+/// Expand a leading `~/` and resolve symlinks, so a rule built from `path`
+/// matches the kernel's view of it.
+///
+/// Returns `path` unchanged when `$HOME` is unset or the path does not exist.
 fn expand_path(path: &str) -> String {
     let expanded = if let Some(rest) = path.strip_prefix("~/")
         && let Ok(home) = std::env::var("HOME")
@@ -282,6 +304,64 @@ mod tests {
                 .unwrap_or_else(|| panic!("profile is missing: {denial}"));
             assert!(at > last_allow, "{denial} must come after every allow rule");
         }
+    }
+
+    #[test]
+    fn denies_process_information_after_every_grant() {
+        // Given the widest configuration: GUI mode and the home directory shared
+        let profile = generate_profile(
+            &gui_config_with(&["~/"]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        // Then all three denials are present and follow the last allow rule.
+        // None closes issue #31 alone, so an edit dropping one has to fail
+        // here rather than quietly reopen the leak.
+        let last_allow = profile.rfind("(allow ").expect("the profile grants");
+        for denial in [
+            "(deny process-info*)",
+            "(deny process-info-pidinfo)",
+            "(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))",
+        ] {
+            let at = profile
+                .find(denial)
+                .unwrap_or_else(|| panic!("profile is missing: {denial}"));
+            assert!(at > last_allow, "{denial} must come after every allow rule");
+        }
+
+        // And no *unscoped* process-info grant survives. SBPL prefers a
+        // specific allow to a wildcard deny whatever the order, so a bare
+        // `(allow process-info-pidinfo)` reopens the leak while every other
+        // assertion here still passes.
+        assert!(
+            !profile.contains("(allow process-info-pidinfo)"),
+            "an unscoped process-info grant outranks (deny process-info*) and reopens issue #31"
+        );
+
+        // And the sysctls ordinary programs read are untouched: the denial
+        // filters one prefix, where denying the operation takes `hw.ncpu` with
+        // it.
+        assert!(profile.contains("(allow sysctl-read)"));
+    }
+
+    // Serial because it reassigns `$HOME`, which is process-wide.
+    #[test]
+    #[serial_test::serial]
+    fn denies_process_information_without_a_home() {
+        // Given no `$HOME` for the home-relative denials to be built from
+        let original = std::env::var("HOME").ok();
+        unsafe { std::env::remove_var("HOME") };
+        let profile = generate_profile(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+        if let Some(home) = original {
+            unsafe { std::env::set_var("HOME", home) };
+        }
+
+        // Then the `$HOME`-independent denials survive its absence.
+        assert!(profile.contains("(deny process-info*)"));
+        assert!(profile.contains("(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))"));
     }
 
     #[test]
