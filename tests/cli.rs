@@ -1,6 +1,6 @@
 //! Integration tests: the built binary, driven through its CLI (SPEC-0001).
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -1009,6 +1009,80 @@ fn refuses_a_local_client_without_the_invocation_credential() {
             .contains("proxy-authenticate: basic"),
         "the refusal should carry the challenge; got: {forwarded:?}"
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn refuses_a_local_client_on_the_ipv6_listener_without_the_invocation_credential() {
+    use std::io::{Read, Write};
+
+    // Given a sandme invocation in flight, and an unrelated local process
+    // reaching the proxy over IPv6 loopback — the second listener, which #10
+    // item 2 reported once bound a port of its own and went unchecked
+    let dir = workdir("refuses-ipv6-client-without-credential");
+    let (mut child, port) = start_with_live_proxy(&dir, &["sleep", "5"]);
+
+    // When it sends a plain request and a CONNECT to [::1]:port with no
+    // credential, as any local process could
+    let answer = |request: &str| {
+        let mut stream =
+            std::net::TcpStream::connect(SocketAddr::from((Ipv6Addr::LOCALHOST, port))).unwrap();
+        stream.write_all(request.as_bytes()).unwrap();
+        let mut answer = String::new();
+        let _ = stream.read_to_string(&mut answer);
+        answer
+    };
+    let forwarded = answer(
+        "GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
+    );
+    let tunnelled = answer(
+        "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\nConnection: close\r\n\r\n",
+    );
+
+    let _ = child.kill();
+    let _ = child.wait();
+
+    // Then the IPv6 listener refuses both with 407, exactly as the IPv4 one
+    // does: the credential gate is not bound to one address family (FR-203)
+    assert!(forwarded.starts_with("HTTP/1.1 407"), "got: {forwarded:?}");
+    assert!(tunnelled.starts_with("HTTP/1.1 407"), "got: {tunnelled:?}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refuses_to_relay_to_host_loopback_over_the_ipv6_listener() {
+    // Given a host-only service on loopback, and a sandboxed command that
+    // reaches the proxy over IPv6 loopback instead of IPv4 — so both the
+    // credential the child presents and the destination restriction are
+    // exercised on the [::1] listener, not only the IPv4 one (FR-201, FR-203)
+    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(serve_once(origin));
+
+    let dir = workdir("refuses-ipv6-pivot-to-host-loopback");
+    let mut cmd = sandme(&dir);
+    // The child rewrites its own proxy URL from 127.0.0.1 to [::1], reusing the
+    // credential sandme put in HTTP_PROXY. The request therefore lands on the
+    // IPv6 listener while still authenticating as this invocation's child, so a
+    // 403 (not a 407) proves the IPv6 path accepted the credential and then
+    // refused the destination.
+    cmd.arg(format!(
+        "curl -sS --max-time 10 -o /dev/null -w '%{{http_code}}' \
+         -x \"$(printf %s \"$HTTP_PROXY\" | sed s/127.0.0.1/[::1]/)\" \
+         http://127.0.0.1:{origin_port}/"
+    ));
+
+    // When the sandboxed command runs
+    let output = cmd.output().unwrap();
+
+    // Then the IPv6 listener answers 403 and the host-only content never
+    // reaches the command: the pivot is closed on both loopback families
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert_eq!(stdout.trim(), "403", "stderr was: {stderr}");
+    assert!(!stdout.contains("served-through-proxy"));
     let _ = std::fs::remove_dir_all(&dir);
 }
 

@@ -4,7 +4,7 @@
 
 - **Status**: Review
 - **Created**: 2026-09-06
-- **Updated**: 2026-09-06
+- **Updated**: 2026-09-10
 - **Related ADRs**: none yet
 - **Related specs**: SPEC-0001 (extends; narrows one of its non-goals — see Spec deltas)
 
@@ -247,12 +247,12 @@ No new flag and no new exit code. The proxy's answers to the client are:
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-201 | `refuses_to_relay_to_a_service_on_host_loopback`, `refuses_to_relay_to_the_cloud_metadata_address` (`tests/cli.rs`); `restricts_every_range_the_sandbox_denies_directly`, `relays_to_ordinary_public_addresses` (`src/egress.rs`) |
+| FR-201 | `refuses_to_relay_to_a_service_on_host_loopback`, `refuses_to_relay_to_the_cloud_metadata_address`, `refuses_to_relay_to_host_loopback_over_the_ipv6_listener` (`tests/cli.rs`, the last proving the check fires on the `[::1]` listener too); `restricts_every_range_the_sandbox_denies_directly`, `relays_to_ordinary_public_addresses` (`src/egress.rs`) |
 | FR-202 | `refuses_to_relay_to_a_service_on_host_loopback` (`tests/cli.rs`) asserts the stderr line |
-| FR-203 | `refuses_a_local_client_without_the_invocation_credential` (`tests/cli.rs`) for the refusal; `routes_http_egress_through_the_proxy` and `no_manual_proxy_configuration_needed` (`tests/cli.rs`) for the child being accepted without configuring anything; `publishes_a_secret_the_child_can_present`, `expects_what_a_client_reading_the_proxy_url_sends`, `encodes_base64_at_every_padding_length` (`src/credential.rs`) |
+| FR-203 | `refuses_a_local_client_without_the_invocation_credential` and `refuses_a_local_client_on_the_ipv6_listener_without_the_invocation_credential` (`tests/cli.rs`) for the refusal on the IPv4 and the `[::1]` listener; `routes_http_egress_through_the_proxy` and `no_manual_proxy_configuration_needed` (`tests/cli.rs`) for the child being accepted without configuring anything; `publishes_a_secret_the_child_can_present`, `expects_what_a_client_reading_the_proxy_url_sends`, `encodes_base64_at_every_padding_length` (`src/credential.rs`) |
 | FR-204 | `relays_to_host_loopback_when_private_egress_is_allowed` (`tests/cli.rs`) — the origin echoes the request it received and it carries no `proxy-authorization` |
 | FR-205 | `relays_to_host_loopback_when_private_egress_is_allowed` (`tests/cli.rs`); `opens_private_egress_only_when_the_environment_asks_for_it`, `keeps_defaults_for_keys_a_config_file_omits` (`src/config.rs`) |
-| FR-206 | `restricts_a_hostname_that_resolves_into_a_restricted_range` (`src/egress.rs`); `reads_the_destination_a_request_names` (`src/proxy.rs`) covers both request forms and the bracketed IPv6 literal; `refuses_a_local_client_without_the_invocation_credential` exercises `CONNECT` |
+| FR-206 | `restricts_a_hostname_that_resolves_into_a_restricted_range` (`src/egress.rs`); `reads_the_destination_a_request_names` (`src/proxy.rs`) covers both request forms and the bracketed IPv6 literal; `refuses_a_local_client_without_the_invocation_credential` and `refuses_a_local_client_on_the_ipv6_listener_without_the_invocation_credential` exercise `CONNECT` on both listeners |
 | NFR-201 | `publishes_a_secret_the_child_can_present` (`src/credential.rs`) — 128 bits, hex, different between two invocations |
 | NFR-202 | `refuses_to_relay_to_the_cloud_metadata_address` (`tests/cli.rs`) returns in well under the timeout, which it could only do without a connection attempt |
 
@@ -295,3 +295,4 @@ None.
 | Date | Change |
 | --- | --- |
 | 2026-09-06 | Initial draft, covering issue #15. Narrows SPEC-0001's filtering non-goal to the smallest policy that makes the sandbox profile's network rule hold. |
+| 2026-09-10 | Added integration tests that exercise FR-201, FR-203 and FR-206 on the `[::1]` loopback listener, not only the IPv4 one. No requirement or behaviour change: the listener already enforced the policy (measured against issue #15's probes); the tests close a verification gap on the address family #10 item 2 reports as historically divergent. |
