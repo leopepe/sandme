@@ -14,3 +14,4 @@
 # Ignored so a partial `specify init` cannot creep into a commit. `docs/specs/`
 # is this repo's spec system.
 /.specify/
+.conductor/
