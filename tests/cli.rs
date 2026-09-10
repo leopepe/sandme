@@ -1068,3 +1068,297 @@ fn denies_rewriting_sandmes_own_config_even_when_the_whole_home_is_shared() {
     );
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// --- Process information and the host's environments (issue #31) ------------
+
+unsafe extern "C" {
+    /// `sysctl(2)`. Declared here rather than taken as a dependency: two calls
+    /// in one test file do not justify a crate, and the platform fixes the
+    /// signature.
+    fn sysctl(
+        name: *const i32,
+        namelen: u32,
+        oldp: *mut u8,
+        oldlenp: *mut usize,
+        newp: *const u8,
+        newlen: usize,
+    ) -> i32;
+
+    /// `proc_pidpath(3)`: writes the executable path of `pid` into `buffer`.
+    fn proc_pidpath(pid: i32, buffer: *mut u8, buffersize: u32) -> i32;
+}
+
+/// `CTL_KERN`, `KERN_PROCARGS2`: the sysctl answering a pid's arguments and
+/// environment. The pid is its third element, so it is reachable only as a
+/// numeric MIB and no name-based profile rule matches it.
+const KERN_PROCARGS2_MIB: [i32; 2] = [1, 49];
+
+/// Room for the longest path `proc_pidpath` can return.
+const PATH_BUFFER_BYTES: u32 = 4096;
+
+/// Makes the kernel calls the tests below put under the sandbox, and prints
+/// the result for the calling test to assert on.
+///
+/// Reads `SANDME_PROBE_PID` (a pid whose arguments and environment to read)
+/// and `SANDME_PROBE_CHILD` (any value: fork, then read the child's executable
+/// path). Prints one line per request, beginning `PROBE-READ` on success and
+/// `PROBE-DENIED` on refusal. Asserts nothing itself; `#[ignore]` keeps it out
+/// of an ordinary run, where it has no input and nothing to do.
+#[test]
+#[ignore = "a fixture the process-information tests drive; not a test on its own"]
+fn probe() {
+    if let Ok(pid) = std::env::var("SANDME_PROBE_PID") {
+        print_process_arguments(pid.parse().expect("the driver passes a pid"));
+    }
+    if std::env::var("SANDME_PROBE_CHILD").is_ok() {
+        print_own_child_path();
+    }
+}
+
+/// Prints `pid`'s arguments and environment as text, or the kernel's refusal.
+///
+/// Non-printing bytes become newlines so the caller can assert on a marker
+/// planted in the target's environment.
+fn print_process_arguments(pid: i32) {
+    let mib = [KERN_PROCARGS2_MIB[0], KERN_PROCARGS2_MIB[1], pid];
+    let mut argmax = 0_usize;
+
+    // The size query is the call the sandbox refuses, so nothing is read
+    // before the refusal.
+    let sized = unsafe {
+        sysctl(
+            mib.as_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &raw mut argmax,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if sized != 0 {
+        println!("PROBE-DENIED {}", std::io::Error::last_os_error());
+        return;
+    }
+
+    let mut buffer = vec![0_u8; argmax];
+    let read = unsafe {
+        sysctl(
+            mib.as_ptr(),
+            3,
+            buffer.as_mut_ptr(),
+            &raw mut argmax,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if read != 0 {
+        println!("PROBE-DENIED {}", std::io::Error::last_os_error());
+        return;
+    }
+
+    buffer.truncate(argmax);
+    let text: String = buffer
+        .iter()
+        .map(|&byte| {
+            if byte.is_ascii_graphic() || byte == b' ' {
+                byte as char
+            } else {
+                '\n'
+            }
+        })
+        .collect();
+    println!("PROBE-READ {argmax} bytes\n{text}");
+}
+
+/// Forks, then prints the child's executable path, or the kernel's refusal.
+fn print_own_child_path() {
+    let child = unsafe { libc_fork() };
+    if child == 0 {
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        std::process::exit(0);
+    }
+
+    let mut buffer = [0_u8; PATH_BUFFER_BYTES as usize];
+    let written = unsafe { proc_pidpath(child, buffer.as_mut_ptr(), PATH_BUFFER_BYTES) };
+    if written > 0 {
+        println!("PROBE-READ child path, {written} bytes");
+    } else {
+        println!("PROBE-DENIED {}", std::io::Error::last_os_error());
+    }
+}
+
+unsafe extern "C" {
+    /// `fork(2)`, named apart from the caller so the `unsafe` block reads as
+    /// the process split it is.
+    #[link_name = "fork"]
+    fn libc_fork() -> i32;
+}
+
+/// Runs the probe under sandme with the default shares, plus the directory
+/// holding the probe binary so the sandbox can execute it.
+///
+/// `variable` and `value` are the environment entry telling the probe what to
+/// ask the kernel for. Returns the probe's captured output.
+fn probe_under_sandme(dir: &Path, variable: &str, value: &str) -> std::process::Output {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let exe_dir = exe.parent().expect("the test binary is in a directory");
+    let shares = format!("{},{}", dir.display(), exe_dir.display());
+    probe_under_sandme_sharing(dir, &shares, variable, value)
+}
+
+/// Runs the probe under sandme with `shares` passed as `shared_paths`
+/// verbatim, so a caller can supply a value that is not a path.
+fn probe_under_sandme_sharing(
+    dir: &Path,
+    shares: &str,
+    variable: &str,
+    value: &str,
+) -> std::process::Output {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let mut cmd = sandme(dir);
+    cmd.env("SANDME_SHARED_PATHS", shares)
+        .env(variable, value)
+        .args([
+            &exe.display().to_string(),
+            "--ignored",
+            "--exact",
+            "probe",
+            "--nocapture",
+        ]);
+    cmd.output().unwrap()
+}
+
+/// Runs the probe with no sandbox between it and the kernel, so a test can
+/// establish that the read it expects to be refused works otherwise.
+fn probe_unsandboxed(variable: &str, value: &str) -> std::process::Output {
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    Command::new(exe)
+        .env(variable, value)
+        .args(["--ignored", "--exact", "probe", "--nocapture"])
+        .output()
+        .unwrap()
+}
+
+/// Spawns a process outside the sandbox holding `marker` in its environment.
+///
+/// Not a platform binary: macOS shields those from this read whatever the
+/// profile says, which would make the assertions below pass for the wrong
+/// reason.
+fn secret_holder(dir: &Path, marker: &str) -> std::process::Child {
+    Command::new(env!("CARGO_BIN_EXE_sandme"))
+        .env("HOME", dir)
+        .env("SANDME_PROXY_PORT", "0")
+        .env("SANDME_TEST_HOST_SECRET", marker)
+        .args(["sleep", "20"])
+        .spawn()
+        .unwrap()
+}
+
+#[test]
+fn denies_reading_another_process_environment() {
+    // Given a process outside the sandbox holding a secret, which the probe
+    // can read when nothing sandboxes it
+    let dir = workdir("denies-reading-another-process-environment");
+    let marker = "sandme-test-host-secret-4f19c7";
+    let mut holder = secret_holder(&dir, marker);
+    let pid = holder.id().to_string();
+
+    let control = probe_unsandboxed("SANDME_PROBE_PID", &pid);
+    let control_out = String::from_utf8_lossy(&control.stdout);
+    assert!(
+        control_out.contains(marker),
+        "the probe cannot read the holder's environment outside the sandbox either, \
+         so the assertion below would pass for the wrong reason: {control_out}"
+    );
+
+    // When a sandboxed command asks the kernel for that process's arguments
+    // and environment
+    let output = probe_under_sandme(&dir, "SANDME_PROBE_PID", &pid);
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Then the kernel refuses, and the secret never reaches the command
+    assert!(
+        stdout.contains("PROBE-DENIED"),
+        "expected the read to be refused, got: {stdout}"
+    );
+    assert!(!stdout.contains(marker), "the environment leaked: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn denies_reading_another_process_environment_under_an_injected_grant() {
+    // Given the same holder, and a shared path that closes the literal it is
+    // interpolated into and appends the two grants this profile narrows.
+    // Nothing escapes that value, so the profile compiles with them in it
+    // (issue #41).
+    let dir = workdir("denies-reading-under-an-injected-grant");
+    let exe = std::env::current_exe().expect("the test binary knows its own path");
+    let exe_dir = exe.parent().expect("the test binary is in a directory");
+    let injected = format!(
+        "{}\")) (allow process-info-pidinfo) (allow sysctl-read) (allow file-read* (subpath \"{}",
+        dir.display(),
+        exe_dir.display()
+    );
+    let marker = "sandme-test-host-secret-b73e02";
+    let mut holder = secret_holder(&dir, marker);
+    let pid = holder.id().to_string();
+
+    // When a sandboxed command asks for that process's environment
+    let output = probe_under_sandme_sharing(&dir, &injected, "SANDME_PROBE_PID", &pid);
+    let _ = holder.kill();
+    let _ = holder.wait();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Then the kernel still refuses. A specific allow outranks a wildcard
+    // denial whatever the order, so the wildcard alone would have been
+    // defeated here; the denial naming the operation is what holds.
+    assert!(
+        stdout.contains("PROBE-DENIED"),
+        "an injected grant reopened the read: {stdout}"
+    );
+    assert!(!stdout.contains(marker), "the environment leaked: {stdout}");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reads_its_own_child_process_information() {
+    // Given a sandboxed command that forks
+    let dir = workdir("reads-its-own-child-process-information");
+
+    // When it asks the kernel for its child's executable path
+    let output = probe_under_sandme(&dir, "SANDME_PROBE_CHILD", "1");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Then it gets an answer: the grant covers the sandbox instance, not only
+    // the calling process, so a command may still supervise what it starts
+    assert!(
+        stdout.contains("PROBE-READ child path"),
+        "a command cannot read its own child's process information: {stdout} \
+         {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn reads_a_sysctl_outside_the_denied_prefix() {
+    // Given the CPU count, which every thread pool on the machine asks for
+    let dir = workdir("reads-a-sysctl-outside-the-denied-prefix");
+    let mut cmd = sandme(&dir);
+    cmd.args(["/usr/sbin/sysctl", "hw.ncpu"]);
+
+    // When a sandboxed command reads it
+    let output = cmd.output().unwrap();
+
+    // Then it gets a value: the denial filters one name prefix, where denying
+    // the operation would take this read with it
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("hw.ncpu:"),
+        "expected a value, got: {} {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
