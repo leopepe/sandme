@@ -33,10 +33,14 @@ use crate::config::Config;
 /// their paths back.
 ///
 /// The `/dev/ptmx` and `/dev/ttysNNN` rules let the command allocate a
-/// pseudo-terminal — a new kernel object it creates, so a real widening
-/// (SPEC-0009). All three are required and none suffices alone (bisected in
-/// issue #29): `/dev/ptmx` needs read-write, unlocking the slave needs
-/// `file-ioctl` on it, and the slave is a `/dev/ttysNNN` device on macOS.
+/// pseudo-terminal and drive it as a terminal — a real widening (SPEC-0009).
+/// Allocation needs read-write on `/dev/ptmx` and `file-ioctl` on it (to unlock
+/// the slave); a terminal emulator additionally claims the slave as its
+/// controlling terminal (`TIOCSCTTY`) and sets its size and modes, which is
+/// `file-ioctl` on the `/dev/ttysNNN` slave. SBPL cannot filter by ioctl
+/// request, so this grant also permits `TIOCSTI` on any same-uid terminal; that
+/// residual is accepted as the cost of a working terminal (SPEC-0009/NFR-902,
+/// issue #29).
 pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
     let mut sbpl = String::from(
         "(version 1)\n\
@@ -56,6 +60,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow file-read* file-write* (literal \"/dev/ptmx\"))\n\
          (allow file-ioctl (literal \"/dev/ptmx\"))\n\
          (allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))\n\
+         (allow file-ioctl (regex #\"^/dev/ttys[0-9]+$\"))\n\
          (allow file-read* file-write* (literal \"/dev/tty\") (literal \"/dev/null\"))\n\
          (allow file-write* (literal \"/dev/null\"))\n\
          (allow file-read* file-write* (subpath \"/dev/fd\"))\n\
@@ -409,29 +414,21 @@ mod tests {
     }
 
     #[test]
-    fn grants_pseudo_terminal_allocation() {
+    fn grants_pseudo_terminal_allocation_and_control() {
         // Given the base profile, with no shared paths
         let profile = generate_profile(
             &config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
 
-        // Then both rules PTY allocation needs are present: the ioctl on the
-        // multiplexer that grants the slave, and read-write to the macOS slave
-        // devices (issue #29). Neither works without the other.
+        // Then the rules a terminal needs are present: read-write on the
+        // multiplexer and the macOS slave devices, and `file-ioctl` on both.
+        // `file-ioctl` on `/dev/ptmx` unlocks the slave at allocation; the same
+        // on the slave lets a terminal emulator claim it as its controlling
+        // terminal (`TIOCSCTTY`) and set its size and modes (issue #29).
+        assert!(profile.contains("(allow file-read* file-write* (literal \"/dev/ptmx\"))"));
         assert!(profile.contains("(allow file-ioctl (literal \"/dev/ptmx\"))"));
         assert!(profile.contains("(allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))"));
-
-        // And `file-ioctl` reaches the multiplexer only, never a slave device
-        // (NFR-902). The slave read-write grant matches every same-uid ttys, so
-        // withholding the slave ioctl is what keeps `TIOCSTI` line-injection
-        // and `TIOCSCTTY` off a foreign terminal — the load-bearing line
-        // between this grant and an escape.
-        assert_eq!(
-            profile.matches("(allow file-ioctl").count(),
-            1,
-            "file-ioctl must be granted on /dev/ptmx alone"
-        );
-        assert!(!profile.contains("(allow file-ioctl (regex"));
+        assert!(profile.contains("(allow file-ioctl (regex #\"^/dev/ttys[0-9]+$\"))"));
     }
 }
