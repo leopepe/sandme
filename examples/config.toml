@@ -10,10 +10,10 @@
 # denied for both. "~/" expands to your home directory, and symlinks are
 # resolved to their targets before the profile is built.
 #
-# Default: ["~/"] — your entire home directory. That is convenient and it is
-# also the least confining setting there is: it includes ~/.ssh, ~/.aws and
-# every dotfile credential you own. Narrow it when the command is something you
-# do not fully trust.
+# Default: the current working directory — the directory you run sandme in, and
+# nothing else. To share more, list it here; "~/" shares your entire home
+# directory, which is convenient and also the least confining setting there is —
+# it includes ~/.ssh, ~/.aws and every dotfile credential you own.
 #
 # There is no read-only share yet, so a toolchain you add here is writable by
 # the sandboxed process: https://github.com/leopepe/sandme/issues/10
@@ -42,10 +42,12 @@ proxy_port = 8787
 # ---------------------------------------------------------------------------
 # gui_mode  (env: SANDME_GUI_MODE=1)
 #
-# Also grants read+write to ~/Library, /private/tmp and /private/var/folders.
+# Also grants read+write to ~/Library and to your per-user temp directory
+# ($TMPDIR). It does NOT open the world-shared /private/tmp or all of
+# /private/var/folders — only the temp directory macOS gives your own session.
 #
 # GUI applications and most editors keep state, caches and preferences under
-# ~/Library and need scratch space in the temp directories. Without it Neovim
+# ~/Library and need scratch space in the temp directory. Without it Neovim
 # starts but reports "tempdir create failed: operation not permitted" and loses
 # swap files, undo history and :terminal; Zed will not launch at all.
 #
