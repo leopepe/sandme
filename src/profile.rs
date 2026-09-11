@@ -56,6 +56,8 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow iokit-open)\n\
          (allow lsopen)\n\
          (allow ipc-posix-shm*)\n\
+         (allow network-bind (local unix-socket))\n\
+         (allow network-outbound (remote unix-socket))\n\
          (allow file-read-metadata)\n\
          (allow file-read* file-write* (literal \"/dev/ptmx\"))\n\
          (allow file-ioctl (literal \"/dev/ptmx\"))\n\
@@ -262,7 +264,16 @@ mod tests {
         let profile = generate_profile(&config_with(&[]), proxy);
 
         assert!(profile.contains("(allow network-outbound (remote ip \"localhost:8787\"))"));
-        assert!(!profile.contains("network-bind"));
+
+        // Unix-domain socket IPC is permitted both ways — the bind Zed's git
+        // askpass makes and the connect its helper makes back (issue #29) — but
+        // nothing wider: no TCP/UDP listener, and no network-outbound to an IP
+        // beyond the proxy.
+        assert!(profile.contains("(allow network-bind (local unix-socket))"));
+        assert!(profile.contains("(allow network-outbound (remote unix-socket))"));
+        assert!(!profile.contains("network-bind (local ip"));
+        assert!(!profile.contains("(allow network-outbound (remote ip \"*"));
+        assert!(!profile.contains("network-inbound"));
     }
 
     fn gui_config_with(paths: &[&str]) -> Config {
