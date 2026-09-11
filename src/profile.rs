@@ -2,6 +2,13 @@
 //!
 //! This module decides what the sandbox permits. Launching a command under a
 //! profile is [`crate::sandbox`].
+//!
+//! This file exceeds the 400-line limit in `docs/guidelines/code/simplicity.md`
+//! §2 and takes that guideline's escape hatch (SPEC-0009). The overage is
+//! tests: the module proper is one cohesive purpose — build the profile — and
+//! its unit tests sit at its foot, where `docs/guidelines/code/consistency.md`
+//! §4 requires them. Splitting either out is the worse alternative the guideline
+//! names.
 
 use std::fmt::Write;
 use std::net::SocketAddr;
@@ -414,5 +421,17 @@ mod tests {
         // devices (issue #29). Neither works without the other.
         assert!(profile.contains("(allow file-ioctl (literal \"/dev/ptmx\"))"));
         assert!(profile.contains("(allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))"));
+
+        // And `file-ioctl` reaches the multiplexer only, never a slave device
+        // (NFR-902). The slave read-write grant matches every same-uid ttys, so
+        // withholding the slave ioctl is what keeps `TIOCSTI` line-injection
+        // and `TIOCSCTTY` off a foreign terminal — the load-bearing line
+        // between this grant and an escape.
+        assert_eq!(
+            profile.matches("(allow file-ioctl").count(),
+            1,
+            "file-ioctl must be granted on /dev/ptmx alone"
+        );
+        assert!(!profile.contains("(allow file-ioctl (regex"));
     }
 }

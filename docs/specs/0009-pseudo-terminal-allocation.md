@@ -122,8 +122,13 @@ loads.
 
 - **NFR-901**: THE PTY grant SHALL extend to no path beyond the pseudo-terminal multiplexer
   (`/dev/ptmx`) and the slave devices matching `^/dev/ttys[0-9]+$`, and SHALL add no network
-  reach. It widens the sandbox by exactly one capability — creating a pseudo-terminal — and
-  nothing else.
+  reach.
+- **NFR-902**: THE `file-ioctl` grant SHALL cover `/dev/ptmx` only, never a slave device. This is
+  the load-bearing restriction: `TIOCSTI` (line-injection) and `TIOCSCTTY` (controlling-terminal
+  seizure) on a foreign terminal are what a slave-device `file-ioctl` grant would enable, and both
+  MUST stay denied. SBPL cannot restrict the slave `file-read*`/`file-write*` grant to
+  self-allocated nodes, so a residual remains (see the Known limitation); the withheld slave
+  `file-ioctl` is what keeps it below an escape.
 
 ## Interface contract
 
@@ -150,11 +155,23 @@ Seatbelt profile; a user observes it only as PTY-using commands no longer failin
 | --- | --- |
 | FR-901 | `allocates_a_pseudo_terminal` (`tests/cli.rs`) — runs `/usr/bin/script`, which calls `openpty(3)`, under the built binary and asserts it succeeds; `grants_pseudo_terminal_allocation` (`src/profile.rs`) asserts both the `file-ioctl` and the `/dev/ttysNNN` regex rules are present. Manually confirmed with the issue's own probes (`pty.openpty()` and `pty.spawn` of a login shell) under `SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="$HOME,/opt/homebrew"`. |
 | NFR-901 | `grants_pseudo_terminal_allocation` pins the grant to `/dev/ptmx` and `^/dev/ttys[0-9]+$`; the existing egress tests (`tests/cli.rs`) show no network rule is added. |
+| NFR-902 | `grants_pseudo_terminal_allocation` asserts `file-ioctl` names `/dev/ptmx` only and no slave device; `/security-audit` (2026-09-11) PoC-confirmed `TIOCSTI` on a foreign slave is denied. |
 
 ## Assumptions
 
 - The slave devices this macOS version hands out match `^/dev/ttys[0-9]+$`. This is the BSD
   naming (`/dev/ttys000`…); verified on Darwin 25.6.0.
+
+## Known limitation
+
+The `^/dev/ttys[0-9]+$` grant matches *every* slave on the host, not only the ones this sandbox
+allocated — SBPL has no predicate for "a node this process created". A sandboxed process can
+therefore open a `/dev/ttysNNN` held by another same-uid process outside the sandbox and read from
+or write to that terminal. Confirmed by `/security-audit` (2026-09-11), graded **Medium**: it is a
+bounded read/write on same-uid terminals, not code execution — `TIOCSTI` line-injection and
+`TIOCSCTTY` are denied because `file-ioctl` is granted on `/dev/ptmx` only (NFR-902). Closing the
+residual would need a mechanism SBPL does not offer; it is recorded here rather than left for the
+next reader to rediscover.
 
 ## Open questions
 
