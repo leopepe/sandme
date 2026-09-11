@@ -117,6 +117,10 @@ Three directories are denied outright, and no setting grants them back:
 The rules are emitted last in the profile, after every grant, because Seatbelt resolves a path
 against the last rule that matches it. `shared_paths = ["~/"]` does not lift them.
 
+**Pseudo-terminals.** A command may allocate one, so an editor's integrated terminal and its
+login-shell environment loading work ([#29](https://github.com/leopepe/sandme/issues/29)). This
+is a real capability — a PTY is a kernel object the command creates — and needs no `gui_mode`.
+
 **Network.** TCP to the proxy port, and nothing else. Direct HTTP, DNS, raw sockets, ICMP and
 listening sockets are all denied. `sandme` sets `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase
 forms in the command's environment, so ordinary HTTP clients use the proxy without you configuring
@@ -288,6 +292,8 @@ Read these before trusting the sandbox with something hostile.
 | Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | The proxy runs unsandboxed. It now refuses loopback, RFC1918 and link-local destinations and requires a per-run credential, but there is no destination allowlist, and `allow_private_egress` re-opens all of it at once. | [#15](https://github.com/leopepe/sandme/issues/15) |
 | `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
+| macOS `/usr/bin/git` is an `xcrun` shim that caches into `$TMPDIR` under `/private/var/folders`. Without `gui_mode` that write is denied and git fails with `Operation not permitted` — the message names `xcrun_db`, not sandme. Run with `gui_mode` on, which grants the temp directories. | [#29](https://github.com/leopepe/sandme/issues/29) |
+| git cannot reach a real remote: SSH remotes (port 22) are denied by design — egress goes only through the proxy — and HTTPS remotes fall through to a username prompt with no terminal to answer it. | [#29](https://github.com/leopepe/sandme/issues/29) |
 
 ## Development
 

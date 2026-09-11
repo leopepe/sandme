@@ -24,6 +24,12 @@ use crate::config::Config;
 /// Nothing may be appended to the result. SBPL resolves a path against the
 /// last matching rule, so a rule added after the closing denials would grant
 /// their paths back.
+///
+/// The `/dev/ptmx` and `/dev/ttysNNN` rules let the command allocate a
+/// pseudo-terminal — a new kernel object it creates, so a real widening
+/// (SPEC-0009). All three are required and none suffices alone (bisected in
+/// issue #29): `/dev/ptmx` needs read-write, unlocking the slave needs
+/// `file-ioctl` on it, and the slave is a `/dev/ttysNNN` device on macOS.
 pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
     let mut sbpl = String::from(
         "(version 1)\n\
@@ -41,7 +47,8 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow ipc-posix-shm*)\n\
          (allow file-read-metadata)\n\
          (allow file-read* file-write* (literal \"/dev/ptmx\"))\n\
-         (allow file-read* file-write* (subpath \"/dev/pts\"))\n\
+         (allow file-ioctl (literal \"/dev/ptmx\"))\n\
+         (allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))\n\
          (allow file-read* file-write* (literal \"/dev/tty\") (literal \"/dev/null\"))\n\
          (allow file-write* (literal \"/dev/null\"))\n\
          (allow file-read* file-write* (subpath \"/dev/fd\"))\n\
@@ -392,5 +399,20 @@ mod tests {
             )
         );
         assert!(!profile.contains("file-write* (literal \"/dev/urandom\")"));
+    }
+
+    #[test]
+    fn grants_pseudo_terminal_allocation() {
+        // Given the base profile, with no shared paths
+        let profile = generate_profile(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        // Then both rules PTY allocation needs are present: the ioctl on the
+        // multiplexer that grants the slave, and read-write to the macOS slave
+        // devices (issue #29). Neither works without the other.
+        assert!(profile.contains("(allow file-ioctl (literal \"/dev/ptmx\"))"));
+        assert!(profile.contains("(allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))"));
     }
 }
