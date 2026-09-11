@@ -2,6 +2,13 @@
 //!
 //! This module decides what the sandbox permits. Launching a command under a
 //! profile is [`crate::sandbox`].
+//!
+//! This file exceeds the 400-line limit in `docs/guidelines/code/simplicity.md`
+//! §2 and takes that guideline's escape hatch (SPEC-0009). The overage is
+//! tests: the module proper is one cohesive purpose — build the profile — and
+//! its unit tests sit at its foot, where `docs/guidelines/code/consistency.md`
+//! §4 requires them. Splitting either out is the worse alternative the guideline
+//! names.
 
 use std::fmt::Write;
 use std::net::SocketAddr;
@@ -24,6 +31,12 @@ use crate::config::Config;
 /// Nothing may be appended to the result. SBPL resolves a path against the
 /// last matching rule, so a rule added after the closing denials would grant
 /// their paths back.
+///
+/// The `/dev/ptmx` and `/dev/ttysNNN` rules let the command allocate a
+/// pseudo-terminal — a new kernel object it creates, so a real widening
+/// (SPEC-0009). All three are required and none suffices alone (bisected in
+/// issue #29): `/dev/ptmx` needs read-write, unlocking the slave needs
+/// `file-ioctl` on it, and the slave is a `/dev/ttysNNN` device on macOS.
 pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
     let mut sbpl = String::from(
         "(version 1)\n\
@@ -41,7 +54,8 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow ipc-posix-shm*)\n\
          (allow file-read-metadata)\n\
          (allow file-read* file-write* (literal \"/dev/ptmx\"))\n\
-         (allow file-read* file-write* (subpath \"/dev/pts\"))\n\
+         (allow file-ioctl (literal \"/dev/ptmx\"))\n\
+         (allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))\n\
          (allow file-read* file-write* (literal \"/dev/tty\") (literal \"/dev/null\"))\n\
          (allow file-write* (literal \"/dev/null\"))\n\
          (allow file-read* file-write* (subpath \"/dev/fd\"))\n\
@@ -392,5 +406,32 @@ mod tests {
             )
         );
         assert!(!profile.contains("file-write* (literal \"/dev/urandom\")"));
+    }
+
+    #[test]
+    fn grants_pseudo_terminal_allocation() {
+        // Given the base profile, with no shared paths
+        let profile = generate_profile(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        // Then both rules PTY allocation needs are present: the ioctl on the
+        // multiplexer that grants the slave, and read-write to the macOS slave
+        // devices (issue #29). Neither works without the other.
+        assert!(profile.contains("(allow file-ioctl (literal \"/dev/ptmx\"))"));
+        assert!(profile.contains("(allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))"));
+
+        // And `file-ioctl` reaches the multiplexer only, never a slave device
+        // (NFR-902). The slave read-write grant matches every same-uid ttys, so
+        // withholding the slave ioctl is what keeps `TIOCSTI` line-injection
+        // and `TIOCSCTTY` off a foreign terminal — the load-bearing line
+        // between this grant and an escape.
+        assert_eq!(
+            profile.matches("(allow file-ioctl").count(),
+            1,
+            "file-ioctl must be granted on /dev/ptmx alone"
+        );
+        assert!(!profile.contains("(allow file-ioctl (regex"));
     }
 }

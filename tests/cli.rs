@@ -489,6 +489,40 @@ fn reads_the_random_devices() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn allocates_a_pseudo_terminal() {
+    // Given a command that allocates a pseudo-terminal. `/usr/bin/script`
+    // opens one with openpty(3) — the same path Zed's integrated terminal and
+    // its login-shell environment loading take, both of which failed with
+    // "out of pty devices" until the sandbox permitted PTY allocation
+    // (issue #29). It lives under /usr, so it needs no shared path of its own.
+    let dir = workdir("allocates-a-pseudo-terminal");
+    let mut cmd = sandme(&dir);
+    cmd.args([
+        "/usr/bin/script",
+        "-q",
+        "/dev/null",
+        "/bin/echo",
+        "pty-works",
+    ]);
+
+    // When it is run
+    let output = cmd.output().unwrap();
+
+    // Then the pseudo-terminal is allocated: the command runs on it instead of
+    // dying with "openpty: Operation not permitted"
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "the sandbox denied PTY allocation; stderr: {stderr:?}"
+    );
+    assert!(
+        String::from_utf8_lossy(&output.stdout).contains("pty-works"),
+        "the command should have run on the allocated PTY; stderr: {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Build a stand-in macOS app bundle and put its CLI wrapper on a `PATH`
 /// directory of its own; returns the value to use as `PATH`.
 ///
