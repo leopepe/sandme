@@ -1925,3 +1925,104 @@ fn refuses_to_run_when_tmpdir_would_inject_into_the_profile() {
     assert!(!marker.exists(), "the injected grant reopened the escape");
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// SPEC-0012 — git-over-SSH reaches its remote by tunnelling through the proxy
+// over HTTP CONNECT, with no configuration by the user (issue #33, #29).
+
+#[test]
+fn wires_the_git_ssh_command_into_the_child() {
+    // Given a sandme invocation with no GIT_SSH_COMMAND of the user's own
+    let dir = workdir("wires-the-git-ssh-command");
+    let mut cmd = sandme(&dir);
+    cmd.env_remove("GIT_SSH_COMMAND")
+        .args(["sh", "-c", "echo \"$GIT_SSH_COMMAND\""]);
+
+    // When the command runs
+    let output = cmd.output().unwrap();
+
+    // Then the child was handed an ssh whose ProxyCommand re-executes sandme in
+    // tunnel mode — git-over-SSH is routed through the proxy with no
+    // configuration by the user (SPEC-0012 FR-1201, NFR-1201)
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("ssh -o ProxyCommand=") && stdout.contains("--sandme-ssh-connect %h %p"),
+        "GIT_SSH_COMMAND should point ssh at the tunnel; got: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn keeps_a_user_supplied_git_ssh_command() {
+    // Given the user set their own GIT_SSH_COMMAND before invoking sandme
+    let dir = workdir("keeps-a-user-supplied-git-ssh-command");
+    let mut cmd = sandme(&dir);
+    cmd.env("GIT_SSH_COMMAND", "ssh -o SetByTheUser=yes").args([
+        "sh",
+        "-c",
+        "echo \"$GIT_SSH_COMMAND\"",
+    ]);
+
+    // When the command runs
+    let output = cmd.output().unwrap();
+
+    // Then sandme leaves it untouched: an injected variable must not overwrite
+    // a value the user set (SPEC-0012 FR-1202, posix.md §6)
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim_end(),
+        "ssh -o SetByTheUser=yes"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn reaches_an_origin_through_the_ssh_connect_tunnel() {
+    // Given a raw TCP origin on loopback — standing in for the byte stream an
+    // SSH server presents — and sandme with private egress allowed so the proxy
+    // will relay to loopback (SPEC-0003 FR-205), keeping this test's subject the
+    // tunnel rather than the destination policy
+    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(echo_line_once(origin));
+
+    let dir = workdir("reaches-an-origin-through-the-ssh-tunnel");
+    let exe = env!("CARGO_BIN_EXE_sandme");
+    let mut cmd = sandme(&dir);
+    // The sandboxed shell runs sandme's own ProxyCommand mode, exactly as ssh
+    // would: it reads the proxy address and this run's credential from
+    // HTTP_PROXY, opens an HTTP CONNECT tunnel to the origin, and relays
+    // stdin/stdout across it (SPEC-0012 FR-1203, FR-1204). The helper is
+    // exec'd from outside the shared path, which the profile's unscoped
+    // `process-exec` already allows — so the tunnel needs no profile change.
+    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").arg(format!(
+        "printf 'ping\\n' | '{exe}' --sandme-ssh-connect 127.0.0.1 {origin_port}"
+    ));
+
+    // When the sandboxed command runs
+    let output = cmd.output().unwrap();
+
+    // Then the origin's reply came back across the tunnel: the credential
+    // authorised the CONNECT and bytes crossed both ways
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("tunnelled-pong"),
+        "the ssh tunnel did not relay the origin's reply; stdout: {stdout:?}, stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Answer one raw TCP client with a fixed marker, so a test can prove bytes
+/// crossed the SSH tunnel in both directions.
+async fn echo_line_once(listener: tokio::net::TcpListener) {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let Ok((mut stream, _)) = listener.accept().await else {
+        return;
+    };
+    let mut buf = [0_u8; 64];
+    let _ = stream.read(&mut buf).await;
+    let _ = stream.write_all(b"tunnelled-pong\n").await;
+    let _ = stream.shutdown().await;
+}
