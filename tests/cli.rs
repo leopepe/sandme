@@ -1306,6 +1306,60 @@ fn denies_rewriting_sandmes_own_config_even_when_the_whole_home_is_shared() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn warns_when_a_widening_setting_comes_from_the_environment() {
+    // Given a widening setting supplied through the environment — the route a
+    // previous sandboxed command's shell rc could have planted (issue #30)
+    let dir = workdir("warns-when-widening-comes-from-environment");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1")
+        .args(["echo", "hi"]);
+
+    // When sandme is run
+    let output = cmd.output().unwrap();
+
+    // Then it warns on stderr, naming the setting and that the environment
+    // carried it, while stdout stays the child's alone (FR-1001, FR-1005)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sandme: warning:")
+            && stderr.contains("allow_private_egress")
+            && stderr.contains("SANDME_ALLOW_PRIVATE_EGRESS"),
+        "expected a prefixed widening warning; got {stderr:?}"
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "hi");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn stays_silent_when_the_same_setting_comes_from_the_config_file() {
+    // Given the identical widening value, but set in the user's own config file,
+    // which the sandbox denies the child (commit 91da40a), with no env override
+    let dir = workdir("stays-silent-when-setting-comes-from-config-file");
+    let config_dir = dir.join(".sandme");
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "allow_private_egress = true\n",
+    )
+    .unwrap();
+    let mut cmd = sandme(&dir);
+    cmd.args(["echo", "hi"]);
+
+    // When sandme is run
+    let output = cmd.output().unwrap();
+
+    // Then no widening warning is emitted: the user set it themselves, not a
+    // sandboxed command via the environment (FR-1002)
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("allow_private_egress"),
+        "a config-file value must not warn; got {stderr:?}"
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "hi");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 // --- Process information and the host's environments (issue #31) ------------
 
 unsafe extern "C" {
