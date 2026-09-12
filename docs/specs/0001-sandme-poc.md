@@ -222,8 +222,11 @@ SPEC-0004's.
 
 - **SC-001**: A user can start their IDE or code agent sandboxed with a single
   `sandme <command>` invocation and no manual sandbox or proxy setup.
-- **SC-002**: A process running under sandme — including any subprocess it spawns —
-  cannot read or write filesystem locations outside the shared paths.
+- **SC-002** *(qualified by SPEC-0013/FR-1301)*: A process running under sandme — including any
+  subprocess it spawns — cannot read or write filesystem locations outside the shared paths. The
+  profile additionally grants the `/dev/fd` subtree (SPEC-0013/FR-1301), which names only the
+  process's own already-open descriptors, not new filesystem locations, so SC-002 holds in
+  substance.
 - **SC-003**: External network traffic originating from the sandboxed process is
   observed at the sandme proxy.
 - **SC-004**: The sandboxed IDE or agent remains usable for its normal workflow on the

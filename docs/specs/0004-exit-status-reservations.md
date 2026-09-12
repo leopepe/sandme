@@ -46,10 +46,12 @@ no ID to withdraw; this spec's table replaces it and is the current contract.
 > spec was accepted, by renumbering this one — the smaller blast radius: no other spec cites
 > its IDs, whereas SPEC-0003's are cited by SPEC-0005, SPEC-0011 and SPEC-0012 and across the
 > proxy source. The `8xx` block is used because SPEC-0003 already holds `2xx`, SPEC-0005 holds
-> `3xx` and SPEC-0006 holds `4xx`, and no SPEC-0008 exists to claim `8xx`. Code and test
-> citations of the old IDs (`src/main.rs`, `src/executable.rs`, `src/sandbox.rs:138`,
-> `tests/cli.rs` exit-status tests) still read `FR-20x`/`NFR-201` and need a follow-up code
-> change; they are listed in this issue's report and cannot be edited under a docs-only change.
+> `3xx` and SPEC-0006 holds `4xx`, and no SPEC-0008 exists to claim `8xx`. This spec's own
+> success-criteria (`SC-801…SC-803`) and task (`T-801…T-804`) identifiers were moved to `8xx`
+> too, so nothing in this spec still reads `2xx`. Code and test citations of the old requirement
+> IDs (`src/main.rs`, `src/executable.rs`, `src/sandbox.rs:138`, `tests/cli.rs` exit-status
+> tests) still read `FR-20x`/`NFR-201` and need a follow-up code change; they are listed in this
+> issue's report and cannot be edited under a docs-only change.
 
 ## Problem
 
@@ -218,11 +220,11 @@ new.
 
 ## Success criteria *(mandatory)*
 
-- **SC-201**: For each of the three sandme failure paths, the observed status is `125` and
+- **SC-801**: For each of the three sandme failure paths, the observed status is `125` and
   stderr carries a `sandme: ` line naming the cause.
-- **SC-202**: `sandme no-such-command-xyz arg` and `sandme 'no-such-command-xyz'` both exit
+- **SC-802**: `sandme no-such-command-xyz arg` and `sandme 'no-such-command-xyz'` both exit
   `127`; `sandme ./not-executable.sh arg` and `sandme './not-executable.sh'` both exit `126`.
-- **SC-203**: `sandme sh -c 'exit 3'` exits `3`, `sandme sh -c 'kill -INT $$'` exits `130`,
+- **SC-803**: `sandme sh -c 'exit 3'` exits `3`, `sandme sh -c 'kill -INT $$'` exits `130`,
   and `sandme sh -c 'exit 125'` exits `125` — no status a command produced is rewritten.
 
 ## Verification
@@ -257,13 +259,13 @@ None.
 
 ## Implementation tasks
 
-- [x] **T-201** — Reserve `125`: map every `SandmeError` that is sandme's own failure to it,
+- [x] **T-801** — Reserve `125`: map every `SandmeError` that is sandme's own failure to it,
   with the diagnostic unchanged (covers FR-801, FR-802)
-- [x] **T-202** — Resolve the named program the way `execvp` does, and turn `sandbox-exec`'s
+- [x] **T-802** — Resolve the named program the way `execvp` does, and turn `sandbox-exec`'s
   `71` into `127` or `126` when that resolution explains it (covers FR-803, FR-804, NFR-801)
-- [x] **T-203** — Tests: integration tests for every row of the exit-code table, unit tests
+- [x] **T-803** — Tests: integration tests for every row of the exit-code table, unit tests
   for the resolution (covers FR-801 … FR-805, NFR-801)
-- [x] **T-204** — Correct the `1`–`125` row of `docs/guidelines/architecture/posix.md` §4,
+- [x] **T-804** — Correct the `1`–`125` row of `docs/guidelines/architecture/posix.md` §4,
   which contradicted the rule stated three lines below it, and the README's exit-status
   paragraph (covers FR-801, FR-805)
 
@@ -272,5 +274,5 @@ None.
 | Date | Change |
 | --- | --- |
 | 2026-09-06 | Initial draft, from [#11](https://github.com/leopepe/sandme/issues/11). Status `Review`: the exit codes are observable behaviour and the change is presented for approval together with its implementation. |
-| 2026-09-12 | Renumbered requirement IDs `FR-201…FR-205` → `FR-801…FR-805` and `NFR-201` → `NFR-801` to clear the `FR-2xx` collision with SPEC-0003 before acceptance (§4 forbids renumbering after `Accepted`; see the note under Spec deltas). Docs-only: code/test citations still read the old IDs and are tracked for a follow-up. |
+| 2026-09-12 | Renumbered requirement IDs `FR-201…FR-205` → `FR-801…FR-805` and `NFR-201` → `NFR-801` (and the local `SC-201…SC-203` → `SC-801…SC-803`, `T-201…T-204` → `T-801…T-804`) to clear the `2xx` collision with SPEC-0003 before acceptance (§4 forbids renumbering after `Accepted`; see the note under Spec deltas). Docs-only: code/test citations still read the old IDs and are tracked for a follow-up. |
 | 2026-09-12 | Status `Review` → `Accepted` → `Implemented`. The exit-status reservations shipped with PR [#27](https://github.com/leopepe/sandme/pull/27); all tasks are ticked and every Verification test exists. Records the approval gate that was skipped when the spec landed at `Review` alongside its implementation ([#34](https://github.com/leopepe/sandme/issues/34) item 1). |
