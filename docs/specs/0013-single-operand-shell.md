@@ -2,7 +2,7 @@
 
 ## Metadata
 
-- **Status**: Draft
+- **Status**: Implemented
 - **Created**: 2026-09-12
 - **Updated**: 2026-09-12
 - **Related ADRs**: none
@@ -108,3 +108,4 @@ bash features (process substitution) now parse in the single-operand form.
 | Date | Change |
 | --- | --- |
 | 2026-09-12 | Initial draft, with the implementation (single-operand form → `/bin/bash`). |
+| 2026-09-12 | Shipped via #51; Status → Implemented (issue #34 reconciliation). |

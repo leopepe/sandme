@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Draft
+- **Status**: Implemented
 - **Created**: 2026-09-10
-- **Updated**: 2026-09-10
+- **Updated**: 2026-09-12
 - **Related ADRs**: none yet
 - **Related specs**: SPEC-0001 (modifies its baseline operation grants), SPEC-0006 (defers the
   sysctl allowlist to it), SPEC-0002 (shares its denial-ordering discipline)
@@ -199,8 +199,10 @@ three are stated.
 
 ## Open questions
 
-- [ ] Are there `process-info` sub-operations other than `pidinfo` that reach another process's
-      environment, and does the FR-303 wildcard cover them? Referred to `/security-audit`.
+Resolved before acceptance: FR-303's `(deny process-info* ...)` wildcard covers every
+`process-info` sub-operation, `pidinfo` included, so no sub-operation is left reachable. Whether a
+future macOS adds a process-info route worth a narrower rule is a follow-up for `/security-audit`,
+not a blocker on this spec — recorded as a non-goal here.
 
 ## Implementation tasks
 
@@ -219,3 +221,4 @@ three are stated.
 | Date | Change |
 | --- | --- |
 | 2026-09-10 | Initial draft, written alongside the implementation. |
+| 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. The process-information isolation shipped with PR [#39](https://github.com/leopepe/sandme/pull/39); all tasks are ticked and every Verification test exists. Resolved the one open question (FR-303's family wildcard covers every `process-info` sub-operation; a narrower rule is a `/security-audit` follow-up, not a blocker) ([#34](https://github.com/leopepe/sandme/issues/34)). |

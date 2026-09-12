@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Review
+- **Status**: Implemented
 - **Created**: 2026-09-06
-- **Updated**: 2026-09-10
+- **Updated**: 2026-09-12
 - **Related ADRs**: none yet
 - **Related specs**: SPEC-0001 (extends; narrows one of its non-goals — see Spec deltas)
 
@@ -296,3 +296,4 @@ None.
 | --- | --- |
 | 2026-09-06 | Initial draft, covering issue #15. Narrows SPEC-0001's filtering non-goal to the smallest policy that makes the sandbox profile's network rule hold. |
 | 2026-09-10 | Added integration tests that exercise FR-201, FR-203 and FR-206 on the `[::1]` loopback listener, not only the IPv4 one. No requirement or behaviour change: the listener already enforced the policy (measured against issue #15's probes); the tests close a verification gap on the address family #10 item 2 reports as historically divergent. |
+| 2026-09-12 | Status `Review` → `Accepted` → `Implemented`. The egress restrictions shipped with PR [#28](https://github.com/leopepe/sandme/pull/28); all tasks are ticked and every Verification test exists. Records the approval gate that was skipped when the spec landed at `Review` alongside its implementation ([#34](https://github.com/leopepe/sandme/issues/34) item 1). |
