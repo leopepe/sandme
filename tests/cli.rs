@@ -20,13 +20,23 @@ fn workdir(name: &str) -> PathBuf {
 /// binding it for another test to slip into. Only a test that has to know the
 /// port up front needs `free_port`.
 fn sandme(workdir: &Path) -> Command {
+    sandme_at(workdir, workdir)
+}
+
+/// The sandme binary with its home directory and working directory set apart.
+///
+/// The default share is the working directory (SPEC-0007 FR-701), so a test
+/// that must tell a working-directory grant from a home-directory one needs the
+/// two to be different places. `sandme` above is the common case where they
+/// coincide.
+fn sandme_at(home: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
-    cmd.env("HOME", workdir)
+    cmd.env("HOME", home)
         .env("SANDME_PROXY_PORT", "0")
         .env_remove("SANDME_SHARED_PATHS")
         .env_remove("SANDME_GUI_MODE")
         .env_remove("SANDME_ALLOW_PRIVATE_EGRESS")
-        .current_dir(workdir);
+        .current_dir(cwd);
     cmd
 }
 
@@ -243,6 +253,104 @@ fn denies_the_home_library_when_gui_mode_is_off() {
     // Then the sandbox refuses: ~/Library is granted for GUI mode, not always
     assert!(!status.success());
     assert!(!target.exists());
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn confines_to_the_working_directory_by_default() {
+    // Given a working directory and a separate home directory, with nothing
+    // configured — the out-of-the-box posture
+    let home = workdir("confines-to-cwd-home");
+    let cwd = workdir("confines-to-cwd-project");
+    let target = cwd.join("proof");
+    let mut cmd = sandme_at(&home, &cwd);
+    cmd.args(["touch", &target.display().to_string()]);
+
+    // When the sandboxed command writes inside the working directory
+    let status = cmd.status().unwrap();
+
+    // Then the write succeeds: the working directory is the default share,
+    // so a tool run in a project reaches that project with no configuration
+    // (SPEC-0007 FR-701)
+    assert!(status.success());
+    assert!(target.exists());
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn denies_the_home_outside_the_working_directory_by_default() {
+    // Given the same default posture, a home directory apart from the working
+    // directory, and a ~/.ssh to write into
+    let home = canonical_workdir("denies-home-default-home");
+    let cwd = workdir("denies-home-default-project");
+    std::fs::create_dir_all(home.join(".ssh")).unwrap();
+    let target = home.join(".ssh").join("evil");
+    let mut cmd = sandme_at(&home, &cwd);
+    cmd.args(["touch", &target.display().to_string()]);
+
+    // When the sandboxed command writes outside the working directory
+    let status = cmd.status().unwrap();
+
+    // Then the sandbox refuses: the default no longer shares the whole home,
+    // so ~/.ssh, ~/.aws and shell history are not exposed out of the box
+    // (SPEC-0007 FR-701, issue #12 §2)
+    assert!(!status.success());
+    assert!(!target.exists());
+    let _ = std::fs::remove_dir_all(&home);
+    let _ = std::fs::remove_dir_all(&cwd);
+}
+
+#[test]
+fn denies_the_world_temp_directory_under_gui_mode() {
+    // Given GUI mode on, a scratch share, and a target directly under the
+    // world-shared /private/tmp
+    let dir = workdir("denies-world-temp-under-gui");
+    let target = std::path::Path::new("/private/tmp").join("sandme-test-worldtmp-probe");
+    let _ = std::fs::remove_file(&target);
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_GUI_MODE", "1")
+        .env("SANDME_SHARED_PATHS", &dir)
+        .args(["touch", &target.display().to_string()]);
+
+    // When the sandboxed command tries to write there
+    let status = cmd.status().unwrap();
+
+    // Then the sandbox refuses: GUI mode grants the per-user $TMPDIR, not all
+    // of /private/tmp — a surface shared with unsandboxed processes
+    // (SPEC-0007 FR-702, issue #12 §3)
+    assert!(!status.success());
+    assert!(!target.exists());
+    let _ = std::fs::remove_file(&target);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn allows_a_git_style_temp_write_under_gui_mode() {
+    // Given GUI mode on and a scratch share. The child inherits $TMPDIR, so it
+    // writes to the same per-user temp directory git's xcrun shim uses (#29).
+    let dir = workdir("allows-git-style-temp-under-gui");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_GUI_MODE", "1")
+        .env("SANDME_SHARED_PATHS", &dir)
+        .args([
+            "sh",
+            "-c",
+            "f=\"$TMPDIR/sandme-test-gittemp-probe\"; touch \"$f\" && rm -f \"$f\" && echo OK",
+        ]);
+
+    // When the sandboxed command writes scratch under $TMPDIR
+    let output = cmd.output().unwrap();
+
+    // Then it succeeds: narrowing the temp grant kept the per-user temp dir
+    // writable, so editors and git-style temp writes still work (SPEC-0007
+    // NFR-701)
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "OK");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1489,9 +1597,8 @@ fn denies_reading_another_process_environment() {
 #[test]
 fn denies_reading_another_process_environment_under_an_injected_grant() {
     // Given the same holder, and a shared path that closes the literal it is
-    // interpolated into and appends the two grants this profile narrows.
-    // Nothing escapes that value, so the profile compiles with them in it
-    // (issue #41).
+    // interpolated into and appends the two grants this profile narrows —
+    // the SBPL injection of issue #41.
     let dir = workdir("denies-reading-under-an-injected-grant");
     let exe = std::env::current_exe().expect("the test binary knows its own path");
     let exe_dir = exe.parent().expect("the test binary is in a directory");
@@ -1509,13 +1616,20 @@ fn denies_reading_another_process_environment_under_an_injected_grant() {
     let _ = holder.kill();
     let _ = holder.wait();
     let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
 
-    // Then the kernel still refuses. A specific allow outranks a wildcard
-    // denial whatever the order, so the wildcard alone would have been
-    // defeated here; the denial naming the operation is what holds.
+    // Then sandme refuses to run at all: `checked_profile_path` rejects a
+    // shared path carrying a quote before the profile is built (SPEC-0007
+    // FR-704), so the injection never reaches SBPL and the environment cannot
+    // leak. The `(deny process-info-pidinfo)` rule that would otherwise outrank
+    // such a grant (SPEC-0005 FR-305) is the defence-in-depth behind that guard.
     assert!(
-        stdout.contains("PROBE-DENIED"),
-        "an injected grant reopened the read: {stdout}"
+        !output.status.success(),
+        "sandme ran a profile built from an injected shared path: {stdout}"
+    );
+    assert!(
+        stderr.contains("sandme:"),
+        "expected sandme's own refusal, got: {stderr}"
     );
     assert!(!stdout.contains(marker), "the environment leaked: {stdout}");
     let _ = std::fs::remove_dir_all(&dir);
@@ -1559,5 +1673,36 @@ fn reads_a_sysctl_outside_the_denied_prefix() {
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)
     );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn refuses_to_run_when_tmpdir_would_inject_into_the_profile() {
+    // Given GUI mode and a `$TMPDIR` crafted to close the subpath literal it is
+    // written into and append `(allow default)` — the escape the profile's
+    // per-user temp grant would otherwise carry (issue #41, found by
+    // /security-audit 2026-09-11). The share is an empty cwd, so only the
+    // injected rule could grant a write to $HOME.
+    let dir = workdir("refuses-a-tmpdir-injection");
+    let marker = dir.join("escaped");
+    let injection = "/tmp\")) (allow default) (allow file-read* (subpath \"/";
+    let mut cmd = sandme_at(&dir, &dir);
+    cmd.env("SANDME_GUI_MODE", "1")
+        .env("TMPDIR", injection)
+        .args(["sh", "-c", &format!("echo pwned > {}", marker.display())]);
+
+    // When sandme builds the profile from that environment
+    let output = cmd.output().unwrap();
+
+    // Then it refuses to run rather than emit the injected profile, says so on
+    // its own channel, and the write the injected grant would have allowed
+    // never happened
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("sandme:"),
+        "expected sandme's own diagnostic, got: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!marker.exists(), "the injected grant reopened the escape");
     let _ = std::fs::remove_dir_all(&dir);
 }

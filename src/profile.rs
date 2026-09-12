@@ -4,7 +4,7 @@
 //! profile is [`crate::sandbox`].
 //!
 //! This file exceeds the 400-line limit in `docs/guidelines/code/simplicity.md`
-//! §2 and takes that guideline's escape hatch (SPEC-0009). The overage is
+//! §2 and takes that guideline's escape hatch (SPEC-0007, SPEC-0009). The overage is
 //! tests: the module proper is one cohesive purpose — build the profile — and
 //! its unit tests sit at its foot, where `docs/guidelines/code/consistency.md`
 //! §4 requires them. Splitting either out is the worse alternative the guideline
@@ -14,6 +14,7 @@ use std::fmt::Write;
 use std::net::SocketAddr;
 
 use crate::config::Config;
+use crate::error::SandmeError;
 
 /// Build the Seatbelt (SBPL) profile for one invocation.
 ///
@@ -32,6 +33,9 @@ use crate::config::Config;
 /// last matching rule, so a rule added after the closing denials would grant
 /// their paths back.
 ///
+/// `(deny appleevent-send)` closes cross-application `AppleEvents` (SPEC-0007
+/// FR-703): the sandbox has no reason to script other applications.
+///
 /// The `/dev/ptmx` and `/dev/ttysNNN` rules let the command allocate a
 /// pseudo-terminal and drive it as a terminal — a real widening (SPEC-0009).
 /// Allocation needs read-write on `/dev/ptmx` and `file-ioctl` on it (to unlock
@@ -41,7 +45,14 @@ use crate::config::Config;
 /// request, so this grant also permits `TIOCSTI` on any same-uid terminal; that
 /// residual is accepted as the cost of a working terminal (SPEC-0009/NFR-902,
 /// issue #29).
-pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
+///
+/// # Errors
+///
+/// Returns [`SandmeError::UnsafeProfilePath`] when a configured path — a
+/// `shared_paths` entry, `$HOME`, `$TMPDIR` or the working directory — carries
+/// a character that could break out of its SBPL string literal. See
+/// [`checked_profile_path`].
+pub fn generate_profile(config: &Config, proxy: SocketAddr) -> Result<String, SandmeError> {
     let mut sbpl = String::from(
         "(version 1)\n\
          (deny default)\n\
@@ -56,6 +67,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow iokit-open)\n\
          (allow lsopen)\n\
          (allow ipc-posix-shm*)\n\
+         (deny appleevent-send)\n\
          (allow network-bind (local unix-socket))\n\
          (allow network-outbound (remote unix-socket))\n\
          (allow file-read-metadata)\n\
@@ -72,7 +84,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
          (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
     );
 
-    append_writable_grants(&mut sbpl, config);
+    append_writable_grants(&mut sbpl, config)?;
 
     let _ = writeln!(
         sbpl,
@@ -80,8 +92,28 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> String {
         proxy.port()
     );
 
-    append_unconditional_denials(&mut sbpl);
-    sbpl
+    append_unconditional_denials(&mut sbpl)?;
+    Ok(sbpl)
+}
+
+/// Return `path` if it can go inside an SBPL `"…"` literal, or an error.
+///
+/// Every configured path — `shared_paths`, `$HOME`, `$TMPDIR`, the working
+/// directory — is written between the quotes of a `(subpath "…")` rule from the
+/// environment or a config file. A `"` closes the literal and turns what
+/// follows into profile syntax, so an injected `(allow default)` is a full
+/// sandbox escape (issue #41); a backslash subverts the next quote's escaping.
+/// Measured against `sandbox-exec`, those two plus ASCII control characters
+/// break out, while parentheses and spaces are inert — so the guard rejects
+/// only the first three, fail-shut, and admits ordinary paths.
+fn checked_profile_path(path: String) -> Result<String, SandmeError> {
+    if path
+        .chars()
+        .any(|c| c == '"' || c == '\\' || c.is_ascii_control())
+    {
+        return Err(SandmeError::UnsafeProfilePath { path });
+    }
+    Ok(path)
 }
 
 /// Directories under `~/Library` that no configuration may reach.
@@ -106,9 +138,9 @@ const DENIED_HOME_DIRECTORIES: [&str; 1] = [".sandme"];
 /// symlinks resolved, and — when `config.gui_mode` is set — the state and
 /// scratch directories GUI applications need. These are the only rules in the
 /// profile that vary per invocation.
-fn append_writable_grants(sbpl: &mut String, config: &Config) {
+fn append_writable_grants(sbpl: &mut String, config: &Config) -> Result<(), SandmeError> {
     for path in &config.shared_paths {
-        let expanded = expand_path(path);
+        let expanded = checked_profile_path(expand_path(path))?;
         let _ = writeln!(
             sbpl,
             "(allow file-read* file-write* (subpath \"{expanded}\"))"
@@ -117,24 +149,41 @@ fn append_writable_grants(sbpl: &mut String, config: &Config) {
 
     if config.gui_mode {
         // GUI applications keep state, caches and preferences under ~/Library,
-        // and scratch space in the temporary directories. A command that is not
-        // a GUI application needs none of it, so none of it is granted unless
-        // the user asks for GUI mode (issue #12).
+        // and scratch space in the per-user temporary directory. A command that
+        // is not a GUI application needs none of it, so none of it is granted
+        // unless the user asks for GUI mode (issue #12).
         if let Some(home) = canonical_home() {
+            let home = checked_profile_path(home)?;
             let _ = writeln!(
                 sbpl,
                 "(allow file-read* file-write* (subpath \"{home}/Library\"))"
             );
         }
-        let _ = writeln!(
-            sbpl,
-            "(allow file-read* file-write* (subpath \"/private/tmp\"))"
-        );
-        let _ = writeln!(
-            sbpl,
-            "(allow file-read* file-write* (subpath \"/private/var/folders\"))"
-        );
+        // Scope the temp grant to the invoking user's own $TMPDIR, not all of
+        // /private/tmp (world-shared) or /private/var/folders (every account's
+        // per-app containers) — issue #12 §3. $TMPDIR is what the child itself
+        // uses for temp files, so this grants precisely where it writes.
+        if let Some(temp) = user_temp_dir() {
+            let temp = checked_profile_path(temp)?;
+            let _ = writeln!(sbpl, "(allow file-read* file-write* (subpath \"{temp}\"))");
+        }
     }
+
+    Ok(())
+}
+
+/// The per-user temporary directory as the kernel sees it, or `None` if
+/// `$TMPDIR` is unset.
+///
+/// `$TMPDIR` names `_CS_DARWIN_USER_TEMP_DIR`, the scratch directory macOS gives
+/// each login session — the one an editor, macOS `diff` on a process
+/// substitution, or git's `xcrun` shim (issue #29) writes into. Symlinks are
+/// resolved so the rule matches the kernel's view of the path, as with
+/// `shared_paths`: `$TMPDIR` reaches its target through `/var`, which resolves
+/// to `/private/var`, and a grant naming the unresolved form would not match.
+fn user_temp_dir() -> Option<String> {
+    let tmpdir = std::env::var("TMPDIR").ok()?;
+    Some(std::fs::canonicalize(&tmpdir).map_or(tmpdir, |resolved| resolved.display().to_string()))
 }
 
 /// Append the denials no configuration may lift.
@@ -144,9 +193,9 @@ fn append_writable_grants(sbpl: &mut String, config: &Config) {
 /// not resolve; the others are written first so they are not lost with it.
 ///
 /// Must be called last. SBPL is last-match-wins for paths, so emitted any
-/// earlier the default `shared_paths = ["~/"]` grants `~/Library` straight
-/// back and the denial does nothing.
-fn append_unconditional_denials(sbpl: &mut String) {
+/// earlier the default share would grant `~/Library` straight back and the
+/// denial does nothing.
+fn append_unconditional_denials(sbpl: &mut String) -> Result<(), SandmeError> {
     // `kern.procargs2` returns any same-uid process's environment, so reading
     // it hands the command every credential the user gave any other program
     // (issue #31). All three rules are needed and each looks redundant beside
@@ -157,18 +206,21 @@ fn append_unconditional_denials(sbpl: &mut String) {
     //
     // SBPL prefers a *specific* allow to a *wildcard* deny whatever the rule
     // order, so `(deny process-info*)` alone is defeated by any unscoped
-    // `(allow process-info-pidinfo)` — including one injected through
-    // `shared_paths`, which `append_writable_grants` interpolates unescaped
-    // (issue #41). Denying the operation at its own specificity ties with such
-    // an allow, leaving last-match-wins to decide it, and still yields to the
-    // more specific `(target same-sandbox)` grant above.
+    // `(allow process-info-pidinfo)`. Denying the operation at its own
+    // specificity ties with such an allow, leaving last-match-wins to decide
+    // it, and still yields to the more specific `(target same-sandbox)` grant
+    // above — defence-in-depth now that `checked_profile_path` rejects the
+    // `shared_paths`/`$TMPDIR` injection that could plant one (issue #41).
     //
     // Stated before the early return below, which must not drop them.
     sbpl.push_str("(deny process-info*)\n");
     sbpl.push_str("(deny process-info-pidinfo)\n");
     sbpl.push_str("(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n");
 
-    let Some(home) = canonical_home() else { return };
+    let Some(home) = canonical_home() else {
+        return Ok(());
+    };
+    let home = checked_profile_path(home)?;
 
     for directory in DENIED_HOME_LIBRARY_DIRECTORIES {
         let _ = writeln!(
@@ -180,6 +232,8 @@ fn append_unconditional_denials(sbpl: &mut String) {
     for directory in DENIED_HOME_DIRECTORIES {
         let _ = writeln!(sbpl, "(deny file-write* (subpath \"{home}/{directory}\"))");
     }
+
+    Ok(())
 }
 
 /// The home directory as the kernel sees it.
@@ -213,6 +267,14 @@ mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr};
 
+    /// The profile for a valid config. The tests here build from paths with no
+    /// SBPL-breaking characters, so generation never returns the error
+    /// [`checked_profile_path`] guards; the injection cases assert on
+    /// [`generate_profile`]'s `Result` directly.
+    fn profile_of(config: &Config, proxy: SocketAddr) -> String {
+        generate_profile(config, proxy).expect("a valid config generates a profile")
+    }
+
     fn config_with(paths: &[&str]) -> Config {
         Config {
             shared_paths: paths.iter().map(|p| (*p).to_string()).collect(),
@@ -224,7 +286,7 @@ mod tests {
 
     #[test]
     fn denies_everything_by_default() {
-        let profile = generate_profile(
+        let profile = profile_of(
             &config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -234,7 +296,7 @@ mod tests {
 
     #[test]
     fn shares_configured_paths_read_write() {
-        let profile = generate_profile(
+        let profile = profile_of(
             &config_with(&["/tmp/sandme-test"]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -247,7 +309,7 @@ mod tests {
         // Given a sandboxed command invocation
         // (this test documents that sandme uses sandbox-exec, the macOS
         // Seatbelt interface, as required by NFR-001)
-        let profile = generate_profile(
+        let profile = profile_of(
             &config_with(&["/tmp/test"]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 8787)),
         );
@@ -261,7 +323,7 @@ mod tests {
     #[test]
     fn routes_network_only_to_the_proxy() {
         let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 8787));
-        let profile = generate_profile(&config_with(&[]), proxy);
+        let profile = profile_of(&config_with(&[]), proxy);
 
         assert!(profile.contains("(allow network-outbound (remote ip \"localhost:8787\"))"));
 
@@ -284,13 +346,34 @@ mod tests {
     }
 
     #[test]
-    fn gui_mode_allows_temp_writes() {
-        let profile = generate_profile(
+    fn gui_mode_grants_the_per_user_temp_dir_only() {
+        let profile = profile_of(
             &gui_config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 8787)),
         );
-        assert!(profile.contains("/private/tmp"));
-        assert!(profile.contains("/private/var/folders"));
+        let temp = user_temp_dir().expect("cargo test runs with TMPDIR set");
+
+        // Given GUI mode, the invoking user's own temp dir is granted
+        assert!(profile.contains(&format!(
+            "(allow file-read* file-write* (subpath \"{temp}\"))"
+        )));
+
+        // And the broad temp surfaces are not: not world-shared /private/tmp,
+        // nor every account's containers under /private/var/folders (issue #12 §3)
+        assert!(!profile.contains("(subpath \"/private/tmp\")"));
+        assert!(!profile.contains("(subpath \"/private/var/folders\")"));
+    }
+
+    #[test]
+    fn denies_the_appleevent_send_operation() {
+        // Given any profile, GUI mode or not
+        let profile = profile_of(
+            &config_with(&[]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 8787)),
+        );
+
+        // Then cross-application AppleEvents are denied (SPEC-0007 FR-703)
+        assert!(profile.contains("(deny appleevent-send)"));
     }
 
     // `$HOME` is process-wide, and config.rs's tests reassign it while they
@@ -305,10 +388,10 @@ mod tests {
         let grant = format!("(allow file-read* file-write* (subpath \"{home}/Library\"))");
 
         // Given GUI mode, the state directory GUI applications need is granted
-        assert!(generate_profile(&gui_config_with(&[]), proxy).contains(&grant));
+        assert!(profile_of(&gui_config_with(&[]), proxy).contains(&grant));
 
         // Given no GUI mode, nothing grants it implicitly
-        assert!(!generate_profile(&config_with(&[]), proxy).contains(&grant));
+        assert!(!profile_of(&config_with(&[]), proxy).contains(&grant));
     }
 
     // Serial for the same reason as the test above.
@@ -316,7 +399,7 @@ mod tests {
     #[serial_test::serial]
     fn denies_the_launchd_and_keychain_directories_after_every_grant() {
         // Given the home directory shared read-write, as it is by default
-        let profile = generate_profile(
+        let profile = profile_of(
             &gui_config_with(&["~/"]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -339,7 +422,7 @@ mod tests {
     #[test]
     fn denies_process_information_after_every_grant() {
         // Given the widest configuration: GUI mode and the home directory shared
-        let profile = generate_profile(
+        let profile = profile_of(
             &gui_config_with(&["~/"]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -381,7 +464,7 @@ mod tests {
         // Given no `$HOME` for the home-relative denials to be built from
         let original = std::env::var("HOME").ok();
         unsafe { std::env::remove_var("HOME") };
-        let profile = generate_profile(
+        let profile = profile_of(
             &config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -397,7 +480,7 @@ mod tests {
     #[test]
     fn grants_dev_fd_read_write() {
         // Given the base profile, with no shared paths
-        let profile = generate_profile(
+        let profile = profile_of(
             &config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -410,7 +493,7 @@ mod tests {
     #[test]
     fn grants_the_random_devices_read_only() {
         // Given the base profile, with no shared paths
-        let profile = generate_profile(
+        let profile = profile_of(
             &config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -427,7 +510,7 @@ mod tests {
     #[test]
     fn grants_pseudo_terminal_allocation_and_control() {
         // Given the base profile, with no shared paths
-        let profile = generate_profile(
+        let profile = profile_of(
             &config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
@@ -441,5 +524,34 @@ mod tests {
         assert!(profile.contains("(allow file-ioctl (literal \"/dev/ptmx\"))"));
         assert!(profile.contains("(allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))"));
         assert!(profile.contains("(allow file-ioctl (regex #\"^/dev/ttys[0-9]+$\"))"));
+    }
+
+    #[test]
+    fn refuses_a_shared_path_that_would_break_out_of_the_profile() {
+        // Given a shared path carrying a quote that closes the subpath literal
+        // and appends an unrestricted grant
+        let injection = "/tmp/x\")) (allow default) (allow file-read* (subpath \"/";
+        let result = generate_profile(
+            &config_with(&[injection]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        // Then generation fails shut rather than emit the injected profile
+        assert!(matches!(result, Err(SandmeError::UnsafeProfilePath { .. })));
+    }
+
+    #[test]
+    fn admits_a_shared_path_with_parentheses_and_spaces() {
+        // Given a path with characters that are inert inside an SBPL literal —
+        // the shape of a real macOS project directory
+        let profile = profile_of(
+            &config_with(&["/tmp/My Project (2024)"]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        // Then it is granted verbatim: the guard rejects only what breaks out
+        assert!(
+            profile.contains("(allow file-read* file-write* (subpath \"/tmp/My Project (2024)\"))")
+        );
     }
 }

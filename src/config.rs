@@ -20,10 +20,12 @@ pub struct Config {
     #[serde(default = "default_proxy_port")]
     pub proxy_port: u16,
 
-    /// Allow GUI applications to write to temporary directories.
+    /// Allow GUI applications to write to their state and scratch directories.
     ///
-    /// When `true`, the sandbox grants write access to `/private/tmp` and
-    /// `/private/var/folders`, which GUI apps need for state and caches.
+    /// When `true`, the sandbox grants write access to `~/Library` and to the
+    /// per-user temporary directory (`$TMPDIR`), which GUI apps need for state,
+    /// caches and scratch space (SPEC-0002 FR-101, SPEC-0007 FR-702). It does
+    /// not open the world-shared `/private/tmp` or all of `/private/var/folders`.
     /// Defaults to `false` to preserve the strict security model.
     #[serde(default = "default_gui_mode")]
     pub gui_mode: bool,
@@ -53,11 +55,24 @@ impl Default for Config {
 /// Every default has exactly one definition, used by both `Default` and serde.
 ///
 /// Two definitions is how `shared_paths` came to have different defaults
-/// depending on whether a config file existed: `Default` said `~/`, the
-/// derived serde default for a `Vec` said empty, and `load` replaces the
-/// whole struct when a file is present.
+/// depending on whether a config file existed: one path said the configured
+/// default, the derived serde default for a `Vec` said empty, and `load`
+/// replaces the whole struct when a file is present. One definition keeps them
+/// in step.
+///
+/// The default is the current working directory, not the home directory
+/// (SPEC-0007 FR-701). A fresh install confines the sandboxed command to the
+/// directory the user invoked it from, so `~/.ssh`, `~/.aws` and shell history
+/// are not shared out of the box; anyone wanting the old whole-home behaviour
+/// sets `shared_paths = ["~/"]` explicitly. `current_dir` fails only when the
+/// working directory has been removed or is unreadable — pathological for an
+/// interactive CLI, and with no safe path to substitute the default is then no
+/// share at all, leaving the command under the base sandbox until `shared_paths`
+/// names something.
 fn default_shared_paths() -> Vec<String> {
-    vec!["~/".to_string()]
+    env::current_dir()
+        .map(|dir| vec![dir.to_string_lossy().into_owned()])
+        .unwrap_or_default()
 }
 
 fn default_proxy_port() -> u16 {
@@ -132,6 +147,20 @@ mod tests {
     use super::*;
 
     #[test]
+    fn default_share_is_the_current_directory() {
+        // Given the process's working directory
+        let cwd = env::current_dir().unwrap();
+
+        // When the default shared paths are computed
+        // Then the working directory is the one and only default share
+        // (SPEC-0007 FR-701), not the home directory it used to be
+        assert_eq!(
+            default_shared_paths(),
+            vec![cwd.to_string_lossy().into_owned()]
+        );
+    }
+
+    #[test]
     #[serial_test::serial]
     fn keeps_defaults_for_absent_settings() {
         // Given a HOME directory with no config file
@@ -150,8 +179,11 @@ mod tests {
         // When the configuration is loaded
         let config = load().unwrap();
 
-        // Then the defaults are returned
-        assert_eq!(config.shared_paths, vec!["~/".to_string()]);
+        // Then the defaults are returned — for shared_paths, the documented
+        // default (the working directory) rather than serde's empty Vec, which
+        // is the bug this test guards against
+        assert_eq!(config.shared_paths, default_shared_paths());
+        assert!(!config.shared_paths.is_empty());
         assert_eq!(config.proxy_port, 8787);
 
         // Restore HOME
@@ -189,7 +221,8 @@ mod tests {
         // was fixed, shared_paths came back empty and the sandboxed command
         // silently lost all filesystem access.
         assert_eq!(config.proxy_port, 9000);
-        assert_eq!(config.shared_paths, vec!["~/".to_string()]);
+        assert_eq!(config.shared_paths, default_shared_paths());
+        assert!(!config.shared_paths.is_empty());
         assert!(!config.gui_mode);
         assert!(!config.allow_private_egress);
 

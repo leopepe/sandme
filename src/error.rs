@@ -58,4 +58,16 @@ pub enum SandmeError {
         /// The underlying bind failure.
         source: std::io::Error,
     },
+
+    /// A path bound for the sandbox profile carries a character that could
+    /// break out of its SBPL string literal; the invocation fails rather than
+    /// emit a profile an attacker could have shaped.
+    #[error(
+        "path {path:?} contains a character that cannot be placed in the sandbox profile \
+         (a quote, backslash, or control character); refusing to run"
+    )]
+    UnsafeProfilePath {
+        /// The offending path, as it would have been written into the profile.
+        path: String,
+    },
 }
