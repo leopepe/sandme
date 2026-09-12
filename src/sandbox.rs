@@ -18,8 +18,19 @@ use crate::proxy;
 /// cause itself (SPEC-0004).
 const EXEC_FAILED: i32 = 71;
 
-/// The shell command string handed to `/bin/sh -c`, with an app-bundle CLI
-/// wrapper at its head redirected to the bundle's own executable.
+/// The shell the single-operand form is routed through.
+///
+/// `/bin/bash`, not `/bin/sh`: macOS's `/bin/sh` is bash in POSIX mode, where
+/// process substitution (`cat <(echo hi)`) is a syntax error — a common
+/// diff/compare pattern for an IDE user, and one that reads like the user's
+/// command is wrong rather than like sandme chose the shell (issue #36).
+/// `/bin/bash` gives fixed, machine-independent semantics with process
+/// substitution enabled; `$SHELL` was rejected because it varies per machine
+/// and fish/nushell `-c` semantics differ from POSIX (SPEC-0013).
+const SHELL: &str = "/bin/bash";
+
+/// The shell command string handed to `/bin/bash -c` (see [`SHELL`]), with an
+/// app-bundle CLI wrapper at its head redirected to the bundle's own executable.
 ///
 /// Only the first word is touched, and only when nothing in it can make it
 /// anything other than the command word: a shell metacharacter there would
@@ -71,10 +82,10 @@ fn single_quoted(text: &str) -> String {
 /// the rest are its arguments (posix.md §5).
 ///
 /// When the user passes a single operand (`sandme 'ls -ltra ./'`), it is
-/// treated as a shell command string and routed through `/bin/sh -c`.
-/// This enables shell features — pipes, redirections, globbing, variable
-/// expansion — inside the quoted command. This matches the convention of
-/// `ssh`, `docker exec`, and `tmux new-session`.
+/// treated as a shell command string and routed through `/bin/bash -c` (see
+/// [`SHELL`]). This enables shell features — pipes, redirections, globbing,
+/// variable expansion, process substitution — inside the quoted command. This
+/// matches the convention of `ssh`, `docker exec`, and `tmux new-session`.
 ///
 /// Either way the program is put through [`app_bundle::main_executable`]
 /// first, so an IDE named by its CLI wrapper starts inside the sandbox
@@ -94,11 +105,11 @@ pub async fn run(
     // clap's required trailing operand guarantees at least one word.
     assert!(!command.is_empty(), "clap requires at least one operand");
 
-    // Single-argument: route through /bin/sh -c so shell features work.
+    // Single-argument: route through the shell so shell features work.
     // Multi-argument: direct exec, first word is the program.
     let (program, args): (String, Vec<String>) = if command.len() == 1 {
         (
-            "/bin/sh".to_string(),
+            SHELL.to_string(),
             vec!["-c".to_string(), redirect_shell_command(&command[0])],
         )
     } else {
@@ -171,7 +182,7 @@ mod tests {
     #[test]
     fn leaves_a_shell_command_alone_when_its_head_is_not_a_bundle() {
         // A name nothing on PATH answers to: there is no bundle to redirect to,
-        // so the string reaches /bin/sh exactly as the user typed it.
+        // so the string reaches the shell exactly as the user typed it.
         let command = "sandme-no-such-command --flag ~/Workspace/";
         assert_eq!(redirect_shell_command(command), command);
     }

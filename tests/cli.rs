@@ -59,6 +59,27 @@ fn prints_child_output() {
 }
 
 #[test]
+fn runs_process_substitution_in_the_single_operand_form() {
+    // Given a single-operand command using process substitution — a bash
+    // feature POSIX `/bin/sh` rejects with a syntax error (issue #36)
+    let dir = workdir("runs-process-substitution");
+    let mut cmd = sandme(&dir);
+    cmd.arg("cat <(echo hi)");
+
+    // When it runs (routed through /bin/bash -c)
+    let output = cmd.output().unwrap();
+
+    // Then the substitution is parsed and its output reaches the caller
+    assert!(
+        output.status.success(),
+        "process substitution failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim_end(), "hi");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn passes_multi_word_arguments_unchanged() {
     // Given a command whose final argument contains a space
     let dir = workdir("passes-multi-word-arguments-unchanged");
