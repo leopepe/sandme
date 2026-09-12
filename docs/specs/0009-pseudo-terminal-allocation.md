@@ -4,7 +4,7 @@
 
 - **Status**: Draft <!-- Draft | Review | Accepted | Implemented | Superseded -->
 - **Created**: 2026-09-10
-- **Updated**: 2026-09-10
+- **Updated**: 2026-09-11
 - **Related ADRs**: none yet
 - **Related specs**: SPEC-0001 (extends; corrects its device rules), SPEC-0002 (extends; both add profile grants beyond `shared_paths`)
 
@@ -27,13 +27,19 @@ its login-shell environment loading — usable under sandme (issue
 
 - **SPEC-0001/FR-002** (the Seatbelt profile realising the sandbox) — was: the device rules
   granted `(allow file-read* file-write* (literal "/dev/ptmx"))` and
-  `(allow file-read* file-write* (subpath "/dev/pts"))`. Now: `/dev/ptmx` additionally carries
-  `(allow file-ioctl (literal "/dev/ptmx"))`, the slave devices are granted as
-  `(allow file-read* file-write* (regex #"^/dev/ttys[0-9]+$"))`, and the `/dev/pts` rule is
-  removed. Reason: on macOS the slave PTY is `/dev/ttysNNN`, not the Linux `/dev/pts/N`, and
-  unlocking a slave issues `TIOCPTYGRANT`/`TIOCPTYUNLK` on the multiplexer, which needs
-  `file-ioctl`. The three rules were bisected in #29 — read-write on `/dev/ptmx` alone, the
-  ioctl alone, and the ttys rule alone each still fail; all three together succeed.
+  `(allow file-read* file-write* (subpath "/dev/pts"))`. Now four rules replace them:
+  `(allow file-read* file-write* (literal "/dev/ptmx"))`,
+  `(allow file-ioctl (literal "/dev/ptmx"))`,
+  `(allow file-read* file-write* (regex #"^/dev/ttys[0-9]+$"))` and
+  `(allow file-ioctl (regex #"^/dev/ttys[0-9]+$"))`, and the `/dev/pts` rule is removed. Reason:
+  on macOS the slave PTY is `/dev/ttysNNN`, not the Linux `/dev/pts/N`. Allocation issues
+  `TIOCPTYGRANT`/`TIOCPTYUNLK` on the multiplexer (needs `file-ioctl` on `/dev/ptmx`); driving the
+  PTY as a terminal issues `TIOCSCTTY`/`TIOCSWINSZ`/`TCSETS` on the slave (needs `file-ioctl` on
+  the `/dev/ttysNNN` rule). Bisected in #29 and by `/security-audit` (2026-09-11): read-write on
+  `/dev/ptmx`, the `/dev/ptmx` ioctl, and the ttys read-write are each necessary for allocation,
+  and the ttys ioctl is additionally necessary for a terminal emulator to attach — without it
+  `TIOCSCTTY` fails with `Operation not permitted`. See NFR-902 for the `TIOCSTI` residual the
+  slave ioctl brings.
 
 ### REMOVED
 
@@ -123,12 +129,17 @@ loads.
 - **NFR-901**: THE PTY grant SHALL extend to no path beyond the pseudo-terminal multiplexer
   (`/dev/ptmx`) and the slave devices matching `^/dev/ttys[0-9]+$`, and SHALL add no network
   reach.
-- **NFR-902**: THE `file-ioctl` grant SHALL cover `/dev/ptmx` only, never a slave device. This is
-  the load-bearing restriction: `TIOCSTI` (line-injection) and `TIOCSCTTY` (controlling-terminal
-  seizure) on a foreign terminal are what a slave-device `file-ioctl` grant would enable, and both
-  MUST stay denied. SBPL cannot restrict the slave `file-read*`/`file-write*` grant to
-  self-allocated nodes, so a residual remains (see the Known limitation); the withheld slave
-  `file-ioctl` is what keeps it below an escape.
+- **NFR-902** *(revised)*: THE `file-ioctl` grant SHALL cover both `/dev/ptmx` and the slave
+  devices matching `^/dev/ttys[0-9]+$`. Allocation needs the ioctl on `/dev/ptmx`; **driving the
+  PTY as a terminal** needs it on the slave — `TIOCSCTTY` to claim the controlling terminal,
+  `TIOCSWINSZ`/`TCSETS` to set size and modes. A terminal emulator (Zed's integrated terminal,
+  `script(1)`, `tmux`) fails at `TIOCSCTTY` with `Operation not permitted` without it (issue #29).
+  SBPL cannot filter `file-ioctl` by request number, so this grant necessarily also permits
+  `TIOCSTI` (line-injection) on a same-uid terminal. That residual is **accepted** as the cost of a
+  usable terminal: it is a bounded local action — not a network escape, not privilege escalation —
+  and it sits on top of the read/write access to same-uid slaves the profile already grants
+  (see the Known limitation). The earlier form of this requirement, which withheld the slave
+  `file-ioctl`, made the sandbox unusable for terminal-driven editors and is superseded here.
 
 ## Interface contract
 
@@ -139,8 +150,8 @@ Seatbelt profile; a user observes it only as PTY-using commands no longer failin
 
 - macOS Seatbelt / SBPL (SPEC-0001/NFR-001). The slave-device grant is a `regex` rule; its SBPL
   string `#"^/dev/ttys[0-9]+$"` must survive Rust string escaping intact.
-- The three rules are interdependent (see the MODIFIED delta): the implementation must add all
-  three, and a regression test must fail if any one is dropped.
+- The four rules are interdependent (see the MODIFIED delta): the implementation must add all
+  four, and a regression test must fail if any is dropped.
 
 ## Success criteria *(mandatory)*
 
@@ -148,14 +159,18 @@ Seatbelt profile; a user observes it only as PTY-using commands no longer failin
   `pty-works` and exits `0`; the same invocation without the fix prints `openpty: Operation not
   permitted`.
 - **SC-902**: The profile contains no `/dev/pts` rule.
+- **SC-903**: A terminal emulator's setup — `openpty`, then `ioctl(slave, TIOCSCTTY)` — succeeds
+  under sandme; without the slave `file-ioctl` grant it fails with `Operation not permitted`, and
+  a spawned shell reports `Failed to spawn … Operation not permitted`.
 
 ## Verification
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-901 | `allocates_a_pseudo_terminal` (`tests/cli.rs`) — runs `/usr/bin/script`, which calls `openpty(3)`, under the built binary and asserts it succeeds; `grants_pseudo_terminal_allocation` (`src/profile.rs`) asserts both the `file-ioctl` and the `/dev/ttysNNN` regex rules are present. Manually confirmed with the issue's own probes (`pty.openpty()` and `pty.spawn` of a login shell) under `SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="$HOME,/opt/homebrew"`. |
-| NFR-901 | `grants_pseudo_terminal_allocation` pins the grant to `/dev/ptmx` and `^/dev/ttys[0-9]+$`; the existing egress tests (`tests/cli.rs`) show no network rule is added. |
-| NFR-902 | `grants_pseudo_terminal_allocation` asserts `file-ioctl` names `/dev/ptmx` only and no slave device; `/security-audit` (2026-09-11) PoC-confirmed `TIOCSTI` on a foreign slave is denied. |
+| FR-901 | `allocates_a_pseudo_terminal` (`tests/cli.rs`) — runs `/usr/bin/script`, which calls `openpty(3)`, under the built binary and asserts it succeeds. Manually confirmed with the issue's own probes (`pty.openpty()`, `pty.spawn` of a login shell) under `SANDME_GUI_MODE=1 SANDME_SHARED_PATHS="$HOME,/opt/homebrew"`. |
+| NFR-901 | `grants_pseudo_terminal_allocation_and_control` (`src/profile.rs`) pins the grant to `/dev/ptmx` and `^/dev/ttys[0-9]+$`; the existing egress tests (`tests/cli.rs`) show no network rule is added. |
+| NFR-902 | `grants_pseudo_terminal_allocation_and_control` asserts `file-ioctl` is granted on both `/dev/ptmx` and the `/dev/ttysNNN` slave. |
+| SC-903 | `controls_a_pseudo_terminal` (`tests/cli.rs`) — a probe that `openpty`s then `ioctl(slave, TIOCSCTTY)` succeeds under the built binary; isolated against a profile withholding the slave `file-ioctl`, where it is denied (`/security-audit` 2026-09-11). |
 
 ## Assumptions
 
@@ -164,14 +179,20 @@ Seatbelt profile; a user observes it only as PTY-using commands no longer failin
 
 ## Known limitation
 
-The `^/dev/ttys[0-9]+$` grant matches *every* slave on the host, not only the ones this sandbox
-allocated — SBPL has no predicate for "a node this process created". A sandboxed process can
-therefore open a `/dev/ttysNNN` held by another same-uid process outside the sandbox and read from
-or write to that terminal. Confirmed by `/security-audit` (2026-09-11), graded **Medium**: it is a
-bounded read/write on same-uid terminals, not code execution — `TIOCSTI` line-injection and
-`TIOCSCTTY` are denied because `file-ioctl` is granted on `/dev/ptmx` only (NFR-902). Closing the
-residual would need a mechanism SBPL does not offer; it is recorded here rather than left for the
-next reader to rediscover.
+The `^/dev/ttys[0-9]+$` grants — both the read/write and, per the revised NFR-902, the
+`file-ioctl` — match *every* slave on the host, not only the ones this sandbox allocated: SBPL has
+no predicate for "a node this process created". A sandboxed process can therefore open a
+`/dev/ttysNNN` held by another same-uid process outside the sandbox and, on it, **read, write, and
+issue `TIOCSTI`** — inject characters as if typed at that terminal. `/security-audit` (2026-09-11)
+graded the read/write alone **Medium**; adding `file-ioctl` raises it, since `TIOCSTI` turns
+observation into input into another same-uid session.
+
+This is **accepted knowingly** (NFR-902, issue #29): the alternative — withholding the slave
+`file-ioctl` — leaves the sandbox unable to run a terminal at all, because `TIOCSCTTY` fails. The
+residual stays bounded: same-uid only, local only, no network reach and no privilege escalation,
+and macOS still denies `TIOCSTI` into a session the process is not the same uid as. A future SBPL
+that can scope `file-ioctl` to self-allocated nodes, or an ioctl-request filter, would let the two
+be separated; neither exists today.
 
 ## Open questions
 
@@ -195,3 +216,4 @@ next reader to rediscover.
 | Date | Change |
 | --- | --- |
 | 2026-09-10 | Initial draft. |
+| 2026-09-11 | Revise NFR-902: grant `file-ioctl` on the slave PTY too, so a terminal emulator can `TIOCSCTTY`. Accepts the `TIOCSTI` residual as the cost of a usable terminal (issue #29, found while running Zed under sandme). Adds SC-903 and `controls_a_pseudo_terminal`. |

@@ -523,6 +523,27 @@ fn allocates_a_pseudo_terminal() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn controls_a_pseudo_terminal() {
+    // Given a command that does what a terminal emulator does — allocate a PTY,
+    // then claim the slave as its controlling terminal with `ioctl(TIOCSCTTY)`.
+    // Zed's integrated terminal (via portable-pty) fails at exactly this step
+    // with "Failed to spawn … Operation not permitted" unless the profile
+    // grants `file-ioctl` on the slave (issue #29).
+    let dir = workdir("controls-a-pseudo-terminal");
+
+    // When it runs under sandme
+    let output = probe_under_sandme(&dir, "SANDME_PROBE_CTTY", "1");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+
+    // Then the kernel lets it claim the controlling terminal
+    assert!(
+        stdout.contains("PROBE-CTTY-OK"),
+        "the sandbox denied TIOCSCTTY on the slave PTY: {stdout}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// Build a stand-in macOS app bundle and put its CLI wrapper on a `PATH`
 /// directory of its own; returns the value to use as `PATH`.
 ///
@@ -1194,7 +1215,28 @@ unsafe extern "C" {
 
     /// `proc_pidpath(3)`: writes the executable path of `pid` into `buffer`.
     fn proc_pidpath(pid: i32, buffer: *mut u8, buffersize: u32) -> i32;
+
+    /// `openpty(3)`: allocate a pseudo-terminal, returning master and slave fds.
+    fn openpty(
+        amaster: *mut i32,
+        aslave: *mut i32,
+        name: *mut u8,
+        termp: *const u8,
+        winp: *const u8,
+    ) -> i32;
+
+    /// `setsid(2)`: make the caller a session leader with no controlling tty,
+    /// the precondition for claiming one.
+    fn setsid() -> i32;
+
+    /// `ioctl(2)` for `TIOCSCTTY`, which takes no argument (a null pointer).
+    fn ioctl(fd: i32, request: u64, arg: *mut u8) -> i32;
 }
+
+/// `TIOCSCTTY` on Darwin: claim the slave as the controlling terminal. It is an
+/// `ioctl` on the `/dev/ttysNNN` slave, so the profile must grant `file-ioctl`
+/// on the slave for it — the step a terminal emulator fails at otherwise.
+const TIOCSCTTY: u64 = 0x2000_7461;
 
 /// `CTL_KERN`, `KERN_PROCARGS2`: the sysctl answering a pid's arguments and
 /// environment. The pid is its third element, so it is reachable only as a
@@ -1207,11 +1249,12 @@ const PATH_BUFFER_BYTES: u32 = 4096;
 /// Makes the kernel calls the tests below put under the sandbox, and prints
 /// the result for the calling test to assert on.
 ///
-/// Reads `SANDME_PROBE_PID` (a pid whose arguments and environment to read)
-/// and `SANDME_PROBE_CHILD` (any value: fork, then read the child's executable
-/// path). Prints one line per request, beginning `PROBE-READ` on success and
-/// `PROBE-DENIED` on refusal. Asserts nothing itself; `#[ignore]` keeps it out
-/// of an ordinary run, where it has no input and nothing to do.
+/// Reads `SANDME_PROBE_PID` (a pid whose arguments and environment to read),
+/// `SANDME_PROBE_CHILD` (fork, then read the child's executable path) and
+/// `SANDME_PROBE_CTTY` (allocate a PTY and claim its controlling terminal).
+/// Prints one line per request, beginning `PROBE-READ`/`PROBE-CTTY-OK` on
+/// success and `PROBE-DENIED`/`PROBE-CTTY-DENIED` on refusal. Asserts nothing
+/// itself; `#[ignore]` keeps it out of an ordinary run.
 #[test]
 #[ignore = "a fixture the process-information tests drive; not a test on its own"]
 fn probe() {
@@ -1220,6 +1263,54 @@ fn probe() {
     }
     if std::env::var("SANDME_PROBE_CHILD").is_ok() {
         print_own_child_path();
+    }
+    if std::env::var("SANDME_PROBE_CTTY").is_ok() {
+        print_controlling_terminal();
+    }
+}
+
+/// Allocate a pseudo-terminal and claim the slave as the controlling terminal,
+/// then print whether the kernel allowed the `TIOCSCTTY` ioctl.
+///
+/// This is the sequence a terminal emulator (Zed's integrated terminal,
+/// `portable-pty`) runs, and the step that fails with `Operation not permitted`
+/// unless the profile grants `file-ioctl` on the slave (issue #29). It forks so
+/// the child is not already a process-group leader — the precondition `setsid`
+/// needs.
+fn print_controlling_terminal() {
+    use std::io::Write;
+    let (mut master, mut slave) = (0_i32, 0_i32);
+    let opened = unsafe {
+        openpty(
+            &raw mut master,
+            &raw mut slave,
+            std::ptr::null_mut(),
+            std::ptr::null(),
+            std::ptr::null(),
+        )
+    };
+    if opened != 0 {
+        println!(
+            "PROBE-CTTY-DENIED openpty {}",
+            std::io::Error::last_os_error()
+        );
+        return;
+    }
+
+    let child = unsafe { libc_fork() };
+    if child == 0 {
+        unsafe { setsid() };
+        let claimed = unsafe { ioctl(slave, TIOCSCTTY, std::ptr::null_mut()) };
+        // Flush explicitly: after `setsid` a lost stdout buffer would swallow
+        // the result the parent captures.
+        let mut out = std::io::stdout();
+        if claimed == 0 {
+            let _ = writeln!(out, "PROBE-CTTY-OK");
+        } else {
+            let _ = writeln!(out, "PROBE-CTTY-DENIED {}", std::io::Error::last_os_error());
+        }
+        let _ = out.flush();
+        std::process::exit(0);
     }
 }
 
