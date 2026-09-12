@@ -2,11 +2,11 @@
 
 ## Metadata
 
-- **Status**: Review
+- **Status**: Implemented
 - **Created**: 2026-09-06
-- **Updated**: 2026-09-06
+- **Updated**: 2026-09-12
 - **Related ADRs**: none yet
-- **Related specs**: SPEC-0001 (extends; adds requirements SPEC-0001 never stated)
+- **Related specs**: SPEC-0001 (extends; adds requirements SPEC-0001 never stated, and qualifies its FR-004 — see Spec deltas)
 
 ## Summary
 
@@ -15,6 +15,29 @@ sandme's Seatbelt profile grants filesystem access that `shared_paths` does not 
 grant appears in SPEC-0001 — its configuration table lists only `shared_paths` and
 `proxy_port`. This spec states what those grants are, ties them to `gui_mode`, and adds a
 small set of directories that no configuration may reach.
+
+## Spec deltas
+
+### ADDED
+
+- **FR-101** … **FR-105**, **NFR-101** below. FR-101–FR-104 and NFR-101 state the `~/Library`
+  and temp grants and the launchd/keychain ceiling that SPEC-0001 never described; FR-105 gives
+  the `gui_mode` configuration key its first requirement ID.
+
+### MODIFIED
+
+- **SPEC-0001/FR-004** — was: *"THE SYSTEM SHALL make configured parts of the local filesystem
+  accessible to the sandboxed command."* Now: FR-004 still holds for everything `shared_paths`
+  names, but it is **qualified by FR-102**: `~/Library/Keychains`, `~/Library/LaunchAgents` and
+  `~/Library/LaunchDaemons` are denied whatever `shared_paths` and `gui_mode` are set to, so
+  naming one of them in `shared_paths` no longer makes it accessible. Reason: FR-004 read as an
+  unqualified SHALL, but the shipped profile denies those three directories unconditionally to
+  close the launchd persistence escape in [#12](https://github.com/leopepe/sandme/issues/12);
+  a reader grepping `FR-004` needs the ceiling in view.
+
+SPEC-0001's other requirements are unchanged. `gui_mode` was a live, security-load-bearing
+config key with no requirement ID anywhere before this spec ([#34](https://github.com/leopepe/sandme/issues/34)
+item 4); FR-105 and the Configuration table below close that gap.
 
 ## Problem
 
@@ -119,6 +142,9 @@ process's lifetime.
   resolved, so the rule names the path the kernel matches against.
 - **FR-104**: WHILE `gui_mode` is disabled THE SYSTEM SHALL grant no access to `~/Library`
   beyond what `shared_paths` names.
+- **FR-105**: THE SYSTEM SHALL provide a boolean configuration key `gui_mode`, defaulting to
+  `false`, settable in the configuration file and through the `SANDME_GUI_MODE` environment
+  variable (`1` or `true`), whose enablement is the trigger FR-101 and FR-104 test.
 
 ### Non-functional
 
@@ -158,11 +184,12 @@ spec states what it does and widens it to cover `~/Library`.
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-101 | `gui_mode_allows_temp_writes`, `grants_the_home_library_only_in_gui_mode` (`src/sandbox.rs`) |
+| FR-101 | `grants_the_home_library_only_in_gui_mode` (`src/profile.rs`) for the `~/Library` clause; `gui_mode_grants_the_per_user_temp_dir_only` (`src/profile.rs`) and `allows_a_git_style_temp_write_under_gui_mode` (`tests/cli.rs`) for the temp clause, whose scope SPEC-0007 later narrowed from `/private/tmp` and `/private/var/folders` to the per-user temp directory |
 | FR-102 | `denies_writing_a_launch_agent_even_when_the_whole_home_is_shared`, `denies_reading_the_keychains_even_when_the_whole_home_is_shared` (`tests/cli.rs`) |
 | FR-103 | `denies_writing_a_launch_agent_even_when_the_whole_home_is_shared`, `denies_reading_the_keychains_even_when_the_whole_home_is_shared` (`tests/cli.rs`) — their scratch home is reached through `/var`, so the denial only bites if it names the resolved path |
-| FR-104 | `denies_the_home_library_when_gui_mode_is_off` (`tests/cli.rs`), `grants_the_home_library_only_in_gui_mode` (`src/sandbox.rs`) |
-| NFR-101 | `denies_the_launchd_and_keychain_directories_after_every_grant` (`src/sandbox.rs`) asserts the ordering; `denies_writing_a_launch_agent_even_when_the_whole_home_is_shared` proves it against the kernel |
+| FR-104 | `denies_the_home_library_when_gui_mode_is_off` (`tests/cli.rs`), `grants_the_home_library_only_in_gui_mode` (`src/profile.rs`) |
+| FR-105 | `keeps_defaults_for_keys_a_config_file_omits` (`src/config.rs`) — a config file that omits `gui_mode` loads it as `false`; the `SANDME_GUI_MODE` override and its effect are exercised by the integration tests naming `gui_mode` above |
+| NFR-101 | `denies_the_launchd_and_keychain_directories_after_every_grant` (`src/profile.rs`) asserts the ordering; `denies_writing_a_launch_agent_even_when_the_whole_home_is_shared` proves it against the kernel |
 
 ## Assumptions
 
@@ -185,10 +212,18 @@ None.
       from the resolved `$HOME` (covers FR-102, FR-103, NFR-101)
 - [x] **T-103** — Tests: unit tests for the grant and the rule ordering, integration tests
       driving the binary for each denial (covers FR-101 through NFR-101)
-- [ ] **T-104** — Not this spec: the four items under Non-goals remain open in #12 and #10
+- [x] **T-104** — Retroactively record `gui_mode` as a configuration key with a requirement ID
+      and confirm its default (covers FR-105). The key shipped in PR #4; its default is asserted
+      by `keeps_defaults_for_keys_a_config_file_omits`.
+- [x] **T-105** — Track the four Non-goal items out of this spec: SPEC-0007 narrowed the default
+      `shared_paths` (#12 §2) and the `gui_mode` temp grant (#12 §3); the `mach-lookup` service
+      allowlist (#12 §4) and the read-only share (#10) remain open in their issues. Not part of
+      this spec's own requirements.
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
 | 2026-09-06 | Initial draft, covering issue #12 part 1 and the previously unspecified `gui_mode`. |
+| 2026-09-12 | Added the mandatory **Spec deltas** section (§4): ADDED FR-101–FR-105/NFR-101, MODIFIED SPEC-0001/FR-004 to record that FR-102 qualifies it. Gave `gui_mode` its first requirement ID (FR-105) ([#34](https://github.com/leopepe/sandme/issues/34) items 3, 4). Corrected the Verification table: the moved profile tests now cite `src/profile.rs` (after the profile split in PR #37), the nonexistent `gui_mode_allows_temp_writes` was replaced with the real `gui_mode_grants_the_per_user_temp_dir_only`/`allows_a_git_style_temp_write_under_gui_mode`, and FR-105 was added. |
+| 2026-09-12 | Status `Review` → `Accepted` → `Implemented`. The grants shipped with PR [#23](https://github.com/leopepe/sandme/pull/23); all of this spec's own tasks are ticked and every Verification test exists. Records the approval gate that was skipped when the spec landed at `Review` ([#34](https://github.com/leopepe/sandme/issues/34) item 1). |

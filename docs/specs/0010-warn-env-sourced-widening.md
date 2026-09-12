@@ -2,7 +2,7 @@
 
 ## Metadata
 
-- **Status**: Draft
+- **Status**: Implemented
 - **Created**: 2026-09-12
 - **Updated**: 2026-09-12
 - **Related ADRs**: none yet
@@ -253,3 +253,4 @@ is a breaking product change and therefore out of scope here:
 | Date | Change |
 | --- | --- |
 | 2026-09-12 | Initial draft: warn loudly on env-sourced widening (issue #30, direction 3). Direction 2 (CLI-only flags) recorded under Open questions for the maintainer. |
+| 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#48](https://github.com/leopepe/sandme/pull/48); all tasks are ticked and every Verification test exists. The one open question (direction 2, CLI-only flags) is a non-blocking breaking-change deferral recorded for the maintainer ([#34](https://github.com/leopepe/sandme/issues/34)). |

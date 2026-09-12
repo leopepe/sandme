@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Accepted
+- **Status**: Implemented
 - **Created**: 2026-08-02
-- **Updated**: 2026-08-08
+- **Updated**: 2026-09-12
 - **Related ADRs**: none yet
 - **Related specs**: none — this is the baseline spec for the proof of concept.
 
@@ -126,8 +126,12 @@ them per invocation.
   environment for that command and execute it there.
 - **FR-003**: WHEN a sandboxed command runs a subcommand or starts a new process, THE
   SYSTEM SHALL ensure that process also runs under the sandboxed environment.
-- **FR-004**: THE SYSTEM SHALL make configured parts of the local filesystem accessible
-  to the sandboxed command.
+- **FR-004** *(qualified by SPEC-0002/FR-102)*: THE SYSTEM SHALL make configured parts of the
+  local filesystem accessible to the sandboxed command — **except** `~/Library/Keychains`,
+  `~/Library/LaunchAgents` and `~/Library/LaunchDaemons`, which SPEC-0002/FR-102 denies whatever
+  `shared_paths` and `gui_mode` are set to (the launchd persistence escape in
+  [#12](https://github.com/leopepe/sandme/issues/12)). Naming one of those three in
+  `shared_paths` no longer grants it; for everything else FR-004 stands.
 - **FR-005**: WHEN the user invokes sandme, THE SYSTEM SHALL start a proxy server as a
   concurrent task and run the sandboxed command in a separate process, in parallel.
 - **FR-006**: THE SYSTEM SHALL automatically route the sandboxed command's network
@@ -158,7 +162,7 @@ them per invocation.
 
 | Flag / argument | Type | Default | Description |
 | --- | --- | --- | --- |
-| `<command> [args...]` | operands | required | The command to run sandboxed. When multiple operands are given (`sandme zed ~/Workspace/`), they are passed to the child unshelled and unquoted — the child receives its own argument vector. When a single operand is given (`sandme 'ls \| grep foo'`), it is routed through `/bin/sh -c` so shell features (pipes, redirections, globbing) work inside it. `--` terminates sandme's option parsing, so the child's own options reach it: `sandme -- curl -sS https://example.com/`. |
+| `<command> [args...]` | operands | required | The command to run sandboxed. When multiple operands are given (`sandme zed ~/Workspace/`), they are passed to the child unshelled and unquoted — the child receives its own argument vector *(qualified by SPEC-0013/FR-1302: when the named program is a macOS app-bundle CLI wrapper, sandme launches the bundle's own main executable in its place)*. When a single operand is given (`sandme 'ls \| grep foo'`), it is routed through `/bin/sh -c` so shell features (pipes, redirections, globbing) work inside it. `--` terminates sandme's option parsing, so the child's own options reach it: `sandme -- curl -sS https://example.com/`. |
 
 The PoC exposes no other flags; shared paths are configured through the config file or
 environment only.
@@ -167,12 +171,18 @@ environment only.
 
 | Key | Env var | Type | Default | Description |
 | --- | --- | --- | --- | --- |
-| `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` | Filesystem paths the sandboxed command may read and write. `~/` prefixes expand to the home directory; symlinks are resolved. |
+| `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` *(default narrowed to the current working directory by SPEC-0007)* | Filesystem paths the sandboxed command may read and write. `~/` prefixes expand to the home directory; symlinks are resolved. |
 | `proxy_port` | `SANDME_PROXY_PORT` | integer (u16) | `8787` | Loopback port the egress proxy listens on. |
 
 Config file location: `~/.sandme/config.toml` (FR-007).
 
-**Exit codes / errors**
+**Exit codes / errors** *(superseded by SPEC-0004 — see its Interface contract for the current table)*
+
+This table described the PoC's original status handling, where `1` doubled as both the wrapped
+command's status and sandme's own failure. SPEC-0004 replaced it: `125` is now reserved for
+sandme's own failures, `126`/`127` report an exec failure sandme identified, and `1`–`124` is the
+wrapped command's own status. The rows below are kept for history; the binding contract is
+SPEC-0004's.
 
 | Code | Condition | Message to user |
 | --- | --- | --- |
@@ -250,7 +260,20 @@ being overturned. -->
 
 ## Open questions
 
-None — all resolved; see the 2026-08-08 changelog entry.
+None block this spec — all were resolved before it was accepted; see the 2026-08-08 changelog
+entry.
+
+### Tracked gap — NFR-002 is unquantified (item 7 of [#34](https://github.com/leopepe/sandme/issues/34))
+
+NFR-002 says the system SHALL be "transparent," which is an adjective, not the countable
+criterion §5 requires, and its Verification row is a manual walkthrough. Two shipped behaviours
+now sit in tension with its "no steps beyond the single invocation and the configuration file"
+clause: `gui_mode` (SPEC-0002/FR-105) must be set before an editor's `~/Library` writes succeed,
+and the app-bundle redirect (SPEC-0013/FR-1302) means the transparent path itself launches a
+different executable. This gap is recorded rather than fixed here: restating NFR-002 with a
+number and an automated test is a change to an `Implemented` spec's requirement, so §4 requires
+it to arrive as a delta in a future spec, and no automated transparency test exists to cite
+today. Left as a tracked gap deliberately, not overlooked.
 
 ## Implementation tasks
 
@@ -270,3 +293,6 @@ None — all resolved; see the 2026-08-08 changelog entry.
 | 2026-08-08 | PoC implemented (T-001…T-007); status → Accepted. All open questions resolved in the body; FR-005 records the proxy as a concurrent task; NFR-003 withdrawn. |
 | 2026-08-08 | Interface aligned with `docs/guidelines/architecture/posix.md`: the command is operands, not a quoted string (`shell-words` removed); env vars use the `SANDME_` prefix; signal deaths exit `128+n`; stdout carries only the child's output; the profile reaches `sandbox-exec` via `-p`; the config file is parsed with serde and malformed input is reported. |
 | 2026-08-08 | Single-operand commands (`sandme 'ls \| grep foo'`) are routed through `/bin/sh -c` so shell features (pipes, redirections, globbing) work. Multi-operand commands remain direct-exec. See [issue #6](https://github.com/leopepe/sandme/issues/6). |
+| 2026-09-12 | Status `Accepted` → `Implemented`: all tasks are ticked and the PoC has shipped, so the requirement IDs are now baseline and MUST NOT be edited in place ([#34](https://github.com/leopepe/sandme/issues/34) item 6). |
+| 2026-09-12 | Recorded the deltas later specs made against this one, per §4: FR-004 is now qualified by SPEC-0002/FR-102 (the launchd/keychain ceiling, item 2); the **Exit codes / errors** table is superseded by SPEC-0004; the `shared_paths` default is narrowed by SPEC-0007; and the "own argument vector" interface clause is qualified by SPEC-0013/FR-1302 (the app-bundle redirect). No requirement text was changed — only supersession/qualification markers added. |
+| 2026-09-12 | Recorded NFR-002 as an open gap: it is stated as an adjective ("transparent") with no countable criterion, and `gui_mode` plus the app-bundle redirect now sit in tension with its "no steps beyond the single invocation" clause ([#34](https://github.com/leopepe/sandme/issues/34) item 7). See Open questions. |
