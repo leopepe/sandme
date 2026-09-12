@@ -59,7 +59,16 @@ async fn main() -> ExitCode {
 
 /// Bring up the proxy and run `command` under the sandbox behind it.
 async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
-    let config = config::load()?;
+    let loaded = config::load()?;
+
+    // A widening setting sourced from the environment can have been planted by a
+    // previous sandboxed command's shell rc, so it is called out on stderr —
+    // never stdout, which carries only the child's output (posix.md §3, issue
+    // #30). The run still proceeds: the warning informs, it does not block.
+    for warning in &loaded.warnings {
+        eprintln!("sandme: {warning}");
+    }
+    let config = loaded.config;
 
     // The proxy comes up first: a sandbox without its proxy is a broken
     // sandbox, so the invocation fails instead (FR-005).
