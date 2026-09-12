@@ -109,7 +109,8 @@ pub async fn run(
 
     let proxy_url = proxy.url();
 
-    let mut child = tokio::process::Command::new("sandbox-exec")
+    let mut command = tokio::process::Command::new("sandbox-exec");
+    command
         .arg("-p")
         .arg(profile)
         .arg(&program)
@@ -117,9 +118,10 @@ pub async fn run(
         .env("HTTP_PROXY", &proxy_url)
         .env("HTTPS_PROXY", &proxy_url)
         .env("http_proxy", &proxy_url)
-        .env("https_proxy", &proxy_url)
-        .spawn()
-        .map_err(SandmeError::Execute)?;
+        .env("https_proxy", &proxy_url);
+    wire_git_ssh(&mut command);
+
+    let mut child = command.spawn().map_err(SandmeError::Execute)?;
 
     let status = tokio::select! {
         status = child.wait() => status.map_err(SandmeError::Execute)?,
@@ -141,6 +143,25 @@ pub async fn run(
     }
 
     Ok(status)
+}
+
+/// Point git's `ssh` at sandme's proxy so `git@host:…` reaches its remote
+/// (issue #33).
+///
+/// git-over-SSH cannot use `HTTP_PROXY`, and the profile denies port 22, so an
+/// SSH remote fails with an opaque error. `GIT_SSH_COMMAND` gives git an `ssh`
+/// whose `ProxyCommand` tunnels through the proxy over HTTP `CONNECT`
+/// (SPEC-0012). It is left untouched when the user set their own, so their
+/// configuration wins (posix.md §6), and skipped when sandme cannot locate its
+/// own executable — the tunnel's `ProxyCommand` re-executes it by absolute
+/// path, so without that path there is nothing to point ssh at.
+fn wire_git_ssh(command: &mut tokio::process::Command) {
+    if std::env::var_os("GIT_SSH_COMMAND").is_some() {
+        return;
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        command.env("GIT_SSH_COMMAND", crate::tunnel::git_ssh_command(&exe));
+    }
 }
 
 #[cfg(test)]
