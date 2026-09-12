@@ -1249,6 +1249,171 @@ async fn refuses_to_relay_to_host_loopback_over_the_ipv6_listener() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+// SPEC-0011 — proxy hardening follow-ups from the audit (issue #32).
+
+#[test]
+fn refuses_to_relay_to_a_cgnat_destination_by_default() {
+    // Given a sandboxed command asking the proxy for a carrier-grade NAT
+    // address — the range Tailscale assigns tailnet peers from, which the proxy
+    // relayed to on defaults before this fix (issue #32 §3)
+    let dir = workdir("refuses-to-relay-to-cgnat");
+    let mut cmd = sandme(&dir);
+    cmd.args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "10",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "http://100.64.0.1/",
+    ]);
+
+    // When it runs
+    let started = std::time::Instant::now();
+    let output = cmd.output().unwrap();
+    let elapsed = started.elapsed();
+
+    // Then the proxy answers 403 without having tried to connect — a prompt
+    // answer is the observable form of "no connection attempt" (FR-1104)
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "403");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the refusal should precede any connection attempt; took {elapsed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn refuses_to_relay_to_a_benchmarking_destination_by_default() {
+    // Given a sandboxed command asking the proxy for a benchmarking address
+    // (198.18.0.0/15, RFC 2544), also relayed on defaults before this fix
+    let dir = workdir("refuses-to-relay-to-benchmarking");
+    let mut cmd = sandme(&dir);
+    cmd.args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "10",
+        "-o",
+        "/dev/null",
+        "-w",
+        "%{http_code}",
+        "http://198.18.0.1/",
+    ]);
+
+    // When it runs
+    let started = std::time::Instant::now();
+    let output = cmd.output().unwrap();
+    let elapsed = started.elapsed();
+
+    // Then the proxy answers 403 before any connection attempt (FR-1104)
+    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "403");
+    assert!(
+        elapsed < std::time::Duration::from_secs(5),
+        "the refusal should precede any connection attempt; took {elapsed:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn strips_hop_by_hop_headers_and_pins_host_to_the_vetted_authority() {
+    // Given an origin that echoes the request it received, reached through the
+    // proxy with private egress allowed (the origin is on loopback), and a
+    // client that sends a hop-by-hop Proxy-Connection header and a Host of its
+    // own choosing (issue #32 §4)
+    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(echo_request_once(origin));
+
+    let dir = workdir("strips-hop-by-hop-and-pins-host");
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "10",
+        "-H",
+        "Proxy-Connection: Keep-Alive",
+        "-H",
+        "Host: internal.example",
+        &format!("http://127.0.0.1:{origin_port}/"),
+    ]);
+
+    // When the sandboxed command runs
+    let output = cmd.output().unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let lower = stdout.to_lowercase();
+
+    // Then the origin saw the authority the proxy vetted as Host, not the vhost
+    // the client chose (FR-1103), and the hop-by-hop Proxy-Connection header did
+    // not reach it (FR-1102)
+    assert!(
+        lower.contains(&format!("host: 127.0.0.1:{origin_port}")),
+        "Host should be pinned to the vetted authority; got: {stdout:?}"
+    );
+    assert!(
+        !lower.contains("internal.example"),
+        "the client-chosen Host must not reach the origin; got: {stdout:?}"
+    );
+    assert!(
+        !lower.contains("proxy-connection"),
+        "hop-by-hop headers must not reach the origin; got: {stdout:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn warns_when_the_ipv6_loopback_listener_cannot_bind() {
+    // Given a process squatting [::1]:port with IPv4 loopback on that port free
+    // — the silent-failure condition issue #32 §2 reports
+    let dir = workdir("warns-when-ipv6-listener-cannot-bind");
+    let (_squatter, port) = v6_squatter_on_a_v4_free_port();
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
+    cmd.env("HOME", &dir)
+        .env("SANDME_PROXY_PORT", port.to_string())
+        .env_remove("SANDME_SHARED_PATHS")
+        .env_remove("SANDME_ALLOW_PRIVATE_EGRESS")
+        .current_dir(&dir)
+        .args(["true"]);
+
+    // When sandme starts its proxy on that port
+    let output = cmd.output().unwrap();
+
+    // Then it does not fail silently: it warns on stderr that the IPv6 loopback
+    // listener could not bind, naming the address, and the child still runs —
+    // the invocation continues on IPv4 (FR-1105)
+    assert!(output.status.success(), "the invocation should still run");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("sandme: proxy could not also listen on IPv6 loopback")
+            && stderr.contains("[::1]"),
+        "expected a warning naming the IPv6 loopback listener; got: {stderr:?}"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A held IPv6 loopback listener on a port whose IPv4 loopback is free, so a
+/// sandme started there binds IPv4 and then finds IPv6 already taken.
+///
+/// The IPv6 bind is what stands in for the squatter of issue #32 §2; the IPv4
+/// probe-bind only confirms the primary listener will come up, and is dropped
+/// before it returns so sandme can take it.
+fn v6_squatter_on_a_v4_free_port() -> (std::net::TcpListener, u16) {
+    for _ in 0..10 {
+        let squatter =
+            std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, 0))).unwrap();
+        let port = squatter.local_addr().unwrap().port();
+        if std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok() {
+            return (squatter, port);
+        }
+    }
+    panic!("no port free on IPv4 loopback while squatted on IPv6 loopback");
+}
+
 /// Answer one HTTP request with the request itself, so a test can assert on
 /// the headers the origin received.
 async fn echo_request_once(listener: tokio::net::TcpListener) {
