@@ -11,12 +11,15 @@ use std::sync::Arc;
 
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
 use hyper::body::{Bytes, Incoming};
-use hyper::header::{PROXY_AUTHENTICATE, PROXY_AUTHORIZATION};
+use hyper::client::conn::http1 as http1_client;
+use hyper::header::{
+    CONNECTION, HOST, HeaderMap, HeaderName, HeaderValue, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION,
+    TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
+};
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
-use hyper_util::client::legacy::Client;
-use hyper_util::rt::{TokioExecutor, TokioIo};
+use hyper_util::rt::TokioIo;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::task::JoinHandle;
 
@@ -102,14 +105,23 @@ pub fn serve(config: &Config) -> Result<Server, SandmeError> {
     // Bind IPv6 to the port IPv4 actually got, not to `port`: with `port` 0 the
     // OS hands the second bind a different ephemeral port, and only `addr` is
     // published to the child and allowed by the sandbox profile.
-    let accept_loop_v6 =
-        std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, addr.port())))
-            .ok()
-            .and_then(|s| {
-                let _ = s.set_nonblocking(true);
-                TcpListener::from_std(s).ok()
-            })
-            .map(|l| tokio::spawn(run_accept_loop(l, policy)));
+    //
+    // A failed IPv6 bind is warned about, not swallowed: a process squatting
+    // `[::1]:port` would otherwise answer a client that reaches for IPv6 with
+    // no sign to the user. The invocation still runs — the published URL is the
+    // literal IPv4 loopback — so this warns and continues rather than failing
+    // (FR-1105).
+    let accept_loop_v6 = match bind_v6_loopback(addr.port()) {
+        Ok(listener) => Some(tokio::spawn(run_accept_loop(listener, policy))),
+        Err(error) => {
+            eprintln!(
+                "sandme: proxy could not also listen on IPv6 loopback [::1]:{}: {error}; \
+                 continuing on IPv4 loopback only",
+                addr.port()
+            );
+            None
+        }
+    };
 
     Ok(Server {
         addr,
@@ -117,6 +129,16 @@ pub fn serve(config: &Config) -> Result<Server, SandmeError> {
         accept_loop,
         accept_loop_v6,
     })
+}
+
+/// Bind the IPv6 loopback listener on `port`, ready for the accept loop.
+///
+/// Separate from the IPv4 bind because its failure is handled differently: the
+/// IPv4 bind fails the invocation, this one only warns (FR-1105).
+fn bind_v6_loopback(port: u16) -> std::io::Result<TcpListener> {
+    let listener = std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, port)))?;
+    listener.set_nonblocking(true)?;
+    TcpListener::from_std(listener)
 }
 
 /// Accept connections until the listener is aborted.
@@ -167,7 +189,7 @@ async fn route(req: Request<Incoming>, policy: Policy) -> Result<Response<Body>,
                 if req.method() == Method::CONNECT {
                     open_tunnel(req, &addresses).await
                 } else {
-                    forward(req).await
+                    forward(req, &addresses).await
                 }
             }
             Destination::Restricted => refuse(&host, port),
@@ -219,26 +241,101 @@ fn unauthorized() -> Response<Body> {
     );
     response.headers_mut().insert(
         PROXY_AUTHENTICATE,
-        hyper::header::HeaderValue::from_static("Basic realm=\"sandme\""),
+        HeaderValue::from_static("Basic realm=\"sandme\""),
     );
     response
 }
 
 /// Forward an absolute-form request to its origin and return the answer.
 ///
+/// The connection is opened to the addresses [`egress::resolve`] already
+/// vetted, not to the name again: re-resolving on the forward path is the
+/// DNS-rebind window `open_tunnel` never had, and closing it holds the whole
+/// proxy to one lookup per request (FR-1101, NFR-1101).
+///
+/// Hop-by-hop headers — the credential among them — are stripped and `Host` is
+/// pinned to the vetted authority first, so the origin receives only what the
+/// proxy checked and never the credential (FR-1102, FR-1103, FR-204).
+///
 /// Failure to reach the origin becomes `502 Bad Gateway` for the client —
 /// the proxy reports it instead of sandme aborting the invocation.
-///
-/// The credential is removed first: it authenticates the child to sandme,
-/// and no origin has any business seeing it (FR-204).
-async fn forward(mut req: Request<Incoming>) -> Response<Body> {
-    req.headers_mut().remove(PROXY_AUTHORIZATION);
+async fn forward(mut req: Request<Incoming>, addresses: &[SocketAddr]) -> Response<Body> {
+    let unreachable = || response_with(StatusCode::BAD_GATEWAY, "proxy could not reach the origin");
 
-    let client = Client::builder(TokioExecutor::new()).build_http();
-    match client.request(req).await {
+    strip_hop_by_hop(req.headers_mut());
+    to_origin_form(&mut req);
+
+    let Ok(stream) = TcpStream::connect(addresses).await else {
+        return unreachable();
+    };
+    let Ok((mut sender, conn)) = http1_client::handshake(TokioIo::new(stream)).await else {
+        return unreachable();
+    };
+    tokio::spawn(conn);
+
+    match sender.send_request(req).await {
         Ok(response) => response.map(BodyExt::boxed),
-        Err(_) => response_with(StatusCode::BAD_GATEWAY, "proxy could not reach the origin"),
+        Err(_) => unreachable(),
     }
+}
+
+/// Rewrite an absolute-form proxied request to the origin form an origin
+/// server expects, pinning `Host` to the authority the proxy vetted.
+///
+/// A proxied request names its target in absolute form (`GET http://host/…`);
+/// an origin server is sent origin form (`GET /…`) with the host in a `Host`
+/// header. Setting that header from the vetted authority — rather than trusting
+/// the one the client sent — stops the client selecting a vhost the proxy did
+/// not check (FR-1103).
+fn to_origin_form(req: &mut Request<Incoming>) {
+    if let Some(authority) = req.uri().authority().cloned()
+        && let Ok(host) = HeaderValue::from_str(authority.as_str())
+    {
+        req.headers_mut().insert(HOST, host);
+    }
+    let path = req
+        .uri()
+        .path_and_query()
+        .map_or_else(|| "/".to_string(), |path| path.as_str().to_string());
+    if let Ok(uri) = path.parse::<hyper::Uri>() {
+        *req.uri_mut() = uri;
+    }
+}
+
+/// Remove the hop-by-hop header fields a proxy must not forward (RFC 9110
+/// §7.6.1): the fixed set below, and any field a `Connection` header names.
+fn strip_hop_by_hop(headers: &mut HeaderMap) {
+    let connection_named: Vec<HeaderName> = headers
+        .get_all(CONNECTION)
+        .iter()
+        .filter_map(|value| value.to_str().ok())
+        .flat_map(|value| value.split(','))
+        .filter_map(|name| name.trim().parse().ok())
+        .collect();
+
+    for name in connection_named {
+        headers.remove(name);
+    }
+    for name in hop_by_hop_headers() {
+        headers.remove(name);
+    }
+}
+
+/// The hop-by-hop header fields named by RFC 9110 §7.6.1, plus the widely sent
+/// non-standard `Proxy-Connection`. Meaningful only on the hop they arrived on,
+/// so none is relayed (FR-1102).
+fn hop_by_hop_headers() -> [HeaderName; 9] {
+    [
+        CONNECTION,
+        PROXY_AUTHENTICATE,
+        PROXY_AUTHORIZATION,
+        TE,
+        TRAILER,
+        TRANSFER_ENCODING,
+        UPGRADE,
+        HeaderName::from_static("keep-alive"),
+        HeaderName::from_static("proxy-connection"),
+    ]
 }
 
 /// Answer a CONNECT request, committing only once the tunnel is live.
