@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Review
+- **Status**: Implemented
 - **Created**: 2026-09-06
-- **Updated**: 2026-09-06
+- **Updated**: 2026-09-12
 - **Related ADRs**: none
 - **Related specs**: SPEC-0001 (supersedes its **Exit codes / errors** contract)
 
@@ -33,11 +33,25 @@ exist and `126` for one that exists but cannot be executed, in place of the `71`
 
 ### ADDED
 
-- FR-201 … FR-205 below.
+- FR-801 … FR-805 below.
 
 Nothing is REMOVED: FR-001 … FR-009 of SPEC-0001 are untouched. The **Exit codes / errors**
 table in SPEC-0001 is an interface contract rather than a numbered requirement, so it carries
 no ID to withdraw; this spec's table replaces it and is the current contract.
+
+> **Requirement IDs renumbered `FR-2xx` → `FR-8xx` (2026-09-12).** This spec and SPEC-0003
+> were both drafted with the `FR-201…`/`NFR-201` block, so a bare `FR-203` was ambiguous
+> between "command not found → 127" (here) and "the proxy credential" (SPEC-0003). Because §4
+> forbids renumbering once a spec is `Accepted`, the collision was resolved *before* either
+> spec was accepted, by renumbering this one — the smaller blast radius: no other spec cites
+> its IDs, whereas SPEC-0003's are cited by SPEC-0005, SPEC-0011 and SPEC-0012 and across the
+> proxy source. The `8xx` block is used because SPEC-0003 already holds `2xx`, SPEC-0005 holds
+> `3xx` and SPEC-0006 holds `4xx`, and no SPEC-0008 exists to claim `8xx`. This spec's own
+> success-criteria (`SC-801…SC-803`) and task (`T-801…T-804`) identifiers were moved to `8xx`
+> too, so nothing in this spec still reads `2xx`. Code and test citations of the old requirement
+> IDs (`src/main.rs`, `src/executable.rs`, `src/sandbox.rs:138`, `tests/cli.rs` exit-status
+> tests) still read `FR-20x`/`NFR-201` and need a follow-up code change; they are listed in this
+> issue's report and cannot be edited under a docs-only change.
 
 ## Problem
 
@@ -148,21 +162,21 @@ which sandbox implementation sandme happens to use.
 
 ### Functional
 
-- **FR-201**: IF sandme cannot read or parse its configuration file, cannot bind the proxy
+- **FR-801**: IF sandme cannot read or parse its configuration file, cannot bind the proxy
   port, or cannot start `sandbox-exec` THEN THE SYSTEM SHALL exit `125`.
-- **FR-202**: WHEN THE SYSTEM exits `125` it SHALL write a diagnostic naming the cause to
+- **FR-802**: WHEN THE SYSTEM exits `125` it SHALL write a diagnostic naming the cause to
   stderr, prefixed `sandme: `.
-- **FR-203**: IF the sandboxed command could not be executed because nothing of that name
+- **FR-803**: IF the sandboxed command could not be executed because nothing of that name
   was found THEN THE SYSTEM SHALL exit `127`.
-- **FR-204**: IF the sandboxed command could not be executed because the file that was found
+- **FR-804**: IF the sandboxed command could not be executed because the file that was found
   is not executable THEN THE SYSTEM SHALL exit `126`.
-- **FR-205**: WHEN the sandboxed command runs, THE SYSTEM SHALL propagate its exit status
+- **FR-805**: WHEN the sandboxed command runs, THE SYSTEM SHALL propagate its exit status
   unchanged, including the values `125`, `126` and `127`, and SHALL report termination by
   signal `n` as `128+n`.
 
 ### Non-functional
 
-- **NFR-201**: THE SYSTEM SHALL determine FR-203 and FR-204 from the filesystem alone, and
+- **NFR-801**: THE SYSTEM SHALL determine FR-803 and FR-804 from the filesystem alone, and
   SHALL NOT parse the child's stderr to do so — the child's streams belong to the child
   (posix.md §3).
 
@@ -206,23 +220,23 @@ new.
 
 ## Success criteria *(mandatory)*
 
-- **SC-201**: For each of the three sandme failure paths, the observed status is `125` and
+- **SC-801**: For each of the three sandme failure paths, the observed status is `125` and
   stderr carries a `sandme: ` line naming the cause.
-- **SC-202**: `sandme no-such-command-xyz arg` and `sandme 'no-such-command-xyz'` both exit
+- **SC-802**: `sandme no-such-command-xyz arg` and `sandme 'no-such-command-xyz'` both exit
   `127`; `sandme ./not-executable.sh arg` and `sandme './not-executable.sh'` both exit `126`.
-- **SC-203**: `sandme sh -c 'exit 3'` exits `3`, `sandme sh -c 'kill -INT $$'` exits `130`,
+- **SC-803**: `sandme sh -c 'exit 3'` exits `3`, `sandme sh -c 'kill -INT $$'` exits `130`,
   and `sandme sh -c 'exit 125'` exits `125` — no status a command produced is rewritten.
 
 ## Verification
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-201 | `reports_a_malformed_config_with_the_reserved_status`, `reports_a_proxy_that_cannot_bind_with_the_reserved_status` (`tests/cli.rs`); `sandbox-exec` missing is not reproducible on a healthy host and is covered by the shared `failure_code` mapping the first two exercise. |
-| FR-202 | The same two tests assert the `sandme: ` prefix and the cause. |
-| FR-203 | `reports_a_command_it_cannot_find_as_127`, `reports_a_missing_command_in_a_shell_string_as_127` (`tests/cli.rs`); `reports_a_name_nothing_answers_to` (unit, `src/executable.rs`). |
-| FR-204 | `reports_a_command_that_is_not_executable_as_126`, `reports_a_non_executable_command_in_a_shell_string_as_126` (`tests/cli.rs`); `reports_a_path_that_is_not_executable` (unit, `src/executable.rs`). |
-| FR-205 | `passes_multi_word_arguments_unchanged` (exit `3`), `reports_signal_deaths_as_128_plus_n` (`130`), `propagates_a_childs_own_reserved_status` (`125`), `propagates_an_unexplained_exec_status` (`71`) (`tests/cli.rs`). |
-| NFR-201 | `reports_no_failure_for_an_executable` (unit, `src/executable.rs`) — the classification takes only a command word and reads only the filesystem; the child's streams are never captured. |
+| FR-801 | `reports_a_malformed_config_with_the_reserved_status`, `reports_a_proxy_that_cannot_bind_with_the_reserved_status` (`tests/cli.rs`); `sandbox-exec` missing is not reproducible on a healthy host and is covered by the shared `failure_code` mapping the first two exercise. |
+| FR-802 | The same two tests assert the `sandme: ` prefix and the cause. |
+| FR-803 | `reports_a_command_it_cannot_find_as_127`, `reports_a_missing_command_in_a_shell_string_as_127` (`tests/cli.rs`); `reports_a_name_nothing_answers_to` (unit, `src/executable.rs`). |
+| FR-804 | `reports_a_command_that_is_not_executable_as_126`, `reports_a_non_executable_command_in_a_shell_string_as_126` (`tests/cli.rs`); `reports_a_path_that_is_not_executable` (unit, `src/executable.rs`). |
+| FR-805 | `passes_multi_word_arguments_unchanged` (exit `3`), `reports_signal_deaths_as_128_plus_n` (`130`), `propagates_a_childs_own_reserved_status` (`125`), `propagates_an_unexplained_exec_status` (`71`) (`tests/cli.rs`). |
+| NFR-801 | `reports_no_failure_for_an_executable` (unit, `src/executable.rs`) — the classification takes only a command word and reads only the filesystem; the child's streams are never captured. |
 
 ## Assumptions
 
@@ -245,18 +259,20 @@ None.
 
 ## Implementation tasks
 
-- [x] **T-201** — Reserve `125`: map every `SandmeError` that is sandme's own failure to it,
-  with the diagnostic unchanged (covers FR-201, FR-202)
-- [x] **T-202** — Resolve the named program the way `execvp` does, and turn `sandbox-exec`'s
-  `71` into `127` or `126` when that resolution explains it (covers FR-203, FR-204, NFR-201)
-- [x] **T-203** — Tests: integration tests for every row of the exit-code table, unit tests
-  for the resolution (covers FR-201 … FR-205, NFR-201)
-- [x] **T-204** — Correct the `1`–`125` row of `docs/guidelines/architecture/posix.md` §4,
+- [x] **T-801** — Reserve `125`: map every `SandmeError` that is sandme's own failure to it,
+  with the diagnostic unchanged (covers FR-801, FR-802)
+- [x] **T-802** — Resolve the named program the way `execvp` does, and turn `sandbox-exec`'s
+  `71` into `127` or `126` when that resolution explains it (covers FR-803, FR-804, NFR-801)
+- [x] **T-803** — Tests: integration tests for every row of the exit-code table, unit tests
+  for the resolution (covers FR-801 … FR-805, NFR-801)
+- [x] **T-804** — Correct the `1`–`125` row of `docs/guidelines/architecture/posix.md` §4,
   which contradicted the rule stated three lines below it, and the README's exit-status
-  paragraph (covers FR-201, FR-205)
+  paragraph (covers FR-801, FR-805)
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
 | 2026-09-06 | Initial draft, from [#11](https://github.com/leopepe/sandme/issues/11). Status `Review`: the exit codes are observable behaviour and the change is presented for approval together with its implementation. |
+| 2026-09-12 | Renumbered requirement IDs `FR-201…FR-205` → `FR-801…FR-805` and `NFR-201` → `NFR-801` (and the local `SC-201…SC-203` → `SC-801…SC-803`, `T-201…T-204` → `T-801…T-804`) to clear the `2xx` collision with SPEC-0003 before acceptance (§4 forbids renumbering after `Accepted`; see the note under Spec deltas). Docs-only: code/test citations still read the old IDs and are tracked for a follow-up. |
+| 2026-09-12 | Status `Review` → `Accepted` → `Implemented`. The exit-status reservations shipped with PR [#27](https://github.com/leopepe/sandme/pull/27); all tasks are ticked and every Verification test exists. Records the approval gate that was skipped when the spec landed at `Review` alongside its implementation ([#34](https://github.com/leopepe/sandme/issues/34) item 1). |

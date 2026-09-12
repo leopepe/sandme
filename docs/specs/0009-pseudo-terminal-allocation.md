@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Draft <!-- Draft | Review | Accepted | Implemented | Superseded -->
+- **Status**: Implemented
 - **Created**: 2026-09-10
-- **Updated**: 2026-09-11
+- **Updated**: 2026-09-12
 - **Related ADRs**: none yet
 - **Related specs**: SPEC-0001 (extends; corrects its device rules), SPEC-0002 (extends; both add profile grants beyond `shared_paths`)
 
@@ -198,15 +198,17 @@ be separated; neither exists today.
 
 <!-- Must be empty before Status leaves Draft. -->
 
-- [ ] Should the `gui_mode`-off `git`/`xcrun` failure under `/private/var/folders` be addressed
-  here or folded into the #12 §3 temp-grant work? — does not block FR-901.
-- [ ] Is SSH egress (port 22) in scope for sandme at all? — does not block FR-901; belongs in its
-  own issue.
+Both resolved before acceptance; neither ever blocked FR-901:
+
+- The `gui_mode`-off `git`/`xcrun` failure under `/private/var/folders` was folded into the #12 §3
+  temp-grant work and shipped in SPEC-0007 (which scoped the `gui_mode` temp grant to `$TMPDIR`).
+- SSH egress (port 22) is in scope and shipped separately as SPEC-0012 (git-over-SSH via a CONNECT
+  tunnel through the proxy), not by opening a raw port-22 rule in this spec.
 
 ## Implementation tasks
 
 - [x] **T-901** — Add the failing tests: `allocates_a_pseudo_terminal` (`tests/cli.rs`) and
-  `grants_pseudo_terminal_allocation` (`src/profile.rs`) (covers FR-901, NFR-901).
+  `grants_pseudo_terminal_allocation_and_control` (`src/profile.rs`) (covers FR-901, NFR-901).
 - [x] **T-902** — Add `(allow file-ioctl (literal "/dev/ptmx"))` and
   `(allow file-read* file-write* (regex #"^/dev/ttys[0-9]+$"))` to `generate_profile`, remove the
   `/dev/pts` rule, and document why in the function's rustdoc (covers FR-901, NFR-901, SC-902).
@@ -217,3 +219,4 @@ be separated; neither exists today.
 | --- | --- |
 | 2026-09-10 | Initial draft. |
 | 2026-09-11 | Revise NFR-902: grant `file-ioctl` on the slave PTY too, so a terminal emulator can `TIOCSCTTY`. Accepts the `TIOCSTI` residual as the cost of a usable terminal (issue #29, found while running Zed under sandme). Adds SC-903 and `controls_a_pseudo_terminal`. |
+| 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PRs [#44](https://github.com/leopepe/sandme/pull/44) and [#46](https://github.com/leopepe/sandme/pull/46); all tasks are ticked and every Verification test exists. Resolved both open questions (the temp-grant question folded into SPEC-0007; SSH egress shipped as SPEC-0012) and fixed T-901's stale test name to `grants_pseudo_terminal_allocation_and_control` ([#34](https://github.com/leopepe/sandme/issues/34)). |

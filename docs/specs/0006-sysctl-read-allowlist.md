@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Draft
+- **Status**: Draft <!-- deferred; NOT implemented — see the 2026-09-12 changelog note -->
 - **Created**: 2026-09-10
-- **Updated**: 2026-09-10
+- **Updated**: 2026-09-12
 - **Related ADRs**: none yet
 - **Related specs**: SPEC-0005 (deferred this from its scope), SPEC-0001 (would modify its
   baseline operation grants)
@@ -161,3 +161,4 @@ counters). Startup 11.7 ms → 11.6 ms median over 21 runs.
 | Date | Change |
 | --- | --- |
 | 2026-09-10 | Initial draft. Deferred out of SPEC-0005; measurement adopted from PR #42. |
+| 2026-09-12 | Confirmed **not implemented** and kept at `Draft` during the [#34](https://github.com/leopepe/sandme/issues/34) reconciliation. The shipped profile still emits the blanket `(allow sysctl-read)` (`src/profile.rs`); no `sysctl-name`/`sysctl-name-prefix` allowlist exists on `main`. The two Open questions still block FR-401 (whether the maintenance cost is worth it, and whether denying `kern.proc` alone via FR-402 suffices), so the spec stays non-`Accepted` by design. |

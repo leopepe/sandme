@@ -2,7 +2,7 @@
 
 ## Metadata
 
-- **Status**: Draft
+- **Status**: Implemented
 - **Created**: 2026-09-12
 - **Updated**: 2026-09-12
 - **Related ADRs**: none yet
@@ -239,15 +239,15 @@ None.
 
 ## Implementation tasks
 
-- [ ] **T-1101** — Connect the plain-HTTP forward path to the vetted addresses via the low-level
+- [x] **T-1101** — Connect the plain-HTTP forward path to the vetted addresses via the low-level
       `hyper` http1 client; drop the `hyper-util` legacy client and its features (covers FR-1101,
       NFR-1101)
-- [ ] **T-1102** — Strip the RFC 9110 hop-by-hop header set and pin `Host` to the vetted authority
+- [x] **T-1102** — Strip the RFC 9110 hop-by-hop header set and pin `Host` to the vetted authority
       on the forward path (covers FR-1102, FR-1103)
-- [ ] **T-1103** — Add CGNAT and benchmarking to the restricted ranges in `src/egress.rs`, gated by
+- [x] **T-1103** — Add CGNAT and benchmarking to the restricted ranges in `src/egress.rs`, gated by
       `allow_private_egress` (covers FR-1104)
-- [ ] **T-1104** — Warn on a failed IPv6 loopback bind and continue on IPv4 (covers FR-1105)
-- [ ] **T-1105** — Tests: integration tests for the CGNAT/benchmarking `403`, the IPv6 warning and
+- [x] **T-1104** — Warn on a failed IPv6 loopback bind and continue on IPv4 (covers FR-1105)
+- [x] **T-1105** — Tests: integration tests for the CGNAT/benchmarking `403`, the IPv6 warning and
       the header handling; unit tests for the added range classification and its gating (covers
       FR-1101 … FR-1105, NFR-1101)
 
@@ -256,3 +256,4 @@ None.
 | Date | Change |
 | --- | --- |
 | 2026-09-12 | Initial draft, covering issue #32 findings 1–4 as deltas to SPEC-0003; finding 5 recorded as a deliberate non-goal. |
+| 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#49](https://github.com/leopepe/sandme/pull/49); every Verification test and its supporting production code is present on `main`. Ticked T-1101…T-1105, whose boxes were left unchecked when the work landed ([#34](https://github.com/leopepe/sandme/issues/34)). |

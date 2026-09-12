@@ -2,7 +2,7 @@
 
 ## Metadata
 
-- **Status**: Draft <!-- Draft | Review | Accepted | Implemented | Superseded -->
+- **Status**: Implemented
 - **Created**: 2026-09-12
 - **Updated**: 2026-09-12
 - **Related ADRs**: none yet
@@ -264,3 +264,4 @@ None.
 | Date | Change |
 | --- | --- |
 | 2026-09-12 | Initial draft, covering issue #33 (split from #29). Adds git-over-SSH tunnelling through the proxy over HTTP CONNECT, reusing SPEC-0003's credential; no Seatbelt profile change. |
+| 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#50](https://github.com/leopepe/sandme/pull/50); all tasks are ticked and every Verification test exists ([#34](https://github.com/leopepe/sandme/issues/34)). |

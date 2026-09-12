@@ -896,7 +896,7 @@ fn reports_a_malformed_config_with_the_reserved_status() {
     let output = cmd.output().unwrap();
 
     // Then it exits with the status reserved for its own failures, and says on
-    // stderr that the failure was its own (FR-201, FR-202)
+    // stderr that the failure was its own (FR-801, FR-802)
     assert_eq!(output.status.code(), Some(125));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -922,7 +922,7 @@ fn reports_a_proxy_that_cannot_bind_with_the_reserved_status() {
     drop(holder);
 
     // Then the invocation fails with sandme's own status, not the command's
-    // (FR-201, FR-202)
+    // (FR-801, FR-802)
     assert_eq!(output.status.code(), Some(125));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -943,7 +943,7 @@ fn reports_a_command_it_cannot_find_as_127() {
     let output = cmd.output().unwrap();
 
     // Then sandme reports the status every shell reports for it, and names the
-    // command on stderr (FR-203)
+    // command on stderr (FR-803)
     assert_eq!(output.status.code(), Some(127));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -964,7 +964,7 @@ fn reports_a_missing_command_in_a_shell_string_as_127() {
     // When it is run
     let status = cmd.status().unwrap();
 
-    // Then the two forms agree: the same command is the same status (FR-203)
+    // Then the two forms agree: the same command is the same status (FR-803)
     assert_eq!(status.code(), Some(127));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -983,7 +983,7 @@ fn reports_a_command_that_is_not_executable_as_126() {
     let output = cmd.output().unwrap();
 
     // Then sandme distinguishes it from a command that is simply absent
-    // (FR-204)
+    // (FR-804)
     assert_eq!(output.status.code(), Some(126));
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
@@ -1005,7 +1005,7 @@ fn reports_a_non_executable_command_in_a_shell_string_as_126() {
     // When it is run
     let status = cmd.status().unwrap();
 
-    // Then the shell's answer matches sandme's own (FR-204)
+    // Then the shell's answer matches sandme's own (FR-804)
     assert_eq!(status.code(), Some(126));
     let _ = std::fs::remove_dir_all(&dir);
 }
@@ -1022,7 +1022,7 @@ fn propagates_a_childs_own_reserved_status() {
         let output = cmd.output().unwrap();
 
         // Then the status is passed through untouched: reserving a value binds
-        // sandme, not the command it wraps (FR-205)
+        // sandme, not the command it wraps (FR-805)
         assert_eq!(output.status.code(), Some(code));
         assert!(
             output.stderr.is_empty(),
@@ -1045,7 +1045,7 @@ fn propagates_an_unexplained_exec_status() {
     let output = cmd.output().unwrap();
 
     // Then sandme leaves it alone: it reinterprets 71 only when it can show
-    // the command could not have run at all (FR-205)
+    // the command could not have run at all (FR-805)
     assert_eq!(output.status.code(), Some(71));
     assert!(
         output.stderr.is_empty(),

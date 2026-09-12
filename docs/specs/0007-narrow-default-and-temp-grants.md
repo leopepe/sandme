@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Draft
+- **Status**: Implemented
 - **Created**: 2026-09-10
-- **Updated**: 2026-09-11
+- **Updated**: 2026-09-12
 - **Related ADRs**: none yet
 - **Related specs**: SPEC-0001 (extends; modifies the `shared_paths` default), SPEC-0002
   (extends; narrows the `gui_mode` temp grant it introduced)
@@ -220,3 +220,4 @@ None blocking. Recorded for a later spec:
 | --- | --- |
 | 2026-09-10 | Initial draft: issue #12 §2, §3 and the `appleevent-send` half of §4. The mach-lookup allowlist (§4) is deferred as an open question. |
 | 2026-09-11 | Add FR-704: reject profile-bound paths carrying SBPL-breaking characters (fail-shut), closing the injection the `/security-audit` found in the new `$TMPDIR` grant and the pre-existing `shared_paths` sink (#41). |
+| 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#47](https://github.com/leopepe/sandme/pull/47); all tasks are ticked and every Verification test exists. Open questions are non-blocking deferrals (the `mach-lookup` allowlist stays scoped out under Non-goals) ([#34](https://github.com/leopepe/sandme/issues/34)). |
