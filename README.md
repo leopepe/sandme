@@ -33,10 +33,10 @@ sandme ls -la ~/Workspace
 sandme cargo test
 ```
 
-**A single quoted operand — routed through `/bin/sh -c`.** Use this when you want shell features:
-pipes, redirection, globbing, `&&`, variable expansion. Note that `/bin/sh` is bash in
-POSIX mode, so process substitution — `<(…)` — is **not** available in this form; pass an explicit
-shell for that: `sandme /bin/bash -c 'cat <(echo hi)'`.
+**A single quoted operand — routed through `/bin/bash -c`.** Use this when you want shell features:
+pipes, redirection, globbing, `&&`, variable expansion, and process substitution — `cat <(echo hi)`
+works in this form. (`diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies
+non-seekable input to a temp file.)
 
 ```shell
 sandme 'ls -la ~/Workspace | grep rust'
@@ -291,7 +291,7 @@ Read these before trusting the sandbox with something hostile.
 | `mach-lookup` is still allowed with no service allowlist. Cross-application AppleEvents are now denied (`appleevent-send`), but narrowing the mach-lookup family to an allowlist is deferred — no escape has been demonstrated, but the channel is not fully closed. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | An app-bundle CLI wrapper is only redirected when it is the first word of the command; inside a compound shell string (`sandme 'cd ~/proj && zed .'`) it is left to the shell and fails. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Redirecting to the bundle executable loses the wrapper's own flags (`zed --wait`, `--version`) — the two binaries have different CLIs. Paths are unaffected. | [#13](https://github.com/leopepe/sandme/issues/13) |
-| Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
+| `diff <(a) <(b)` needs `gui_mode`, because macOS `diff` copies non-seekable process-substitution input to a temp file under `$TMPDIR`. (Process substitution itself works in the single-operand form since it is routed through `/bin/bash`.) | [#12](https://github.com/leopepe/sandme/issues/12) |
 | The proxy runs unsandboxed. It now refuses loopback, RFC1918 and link-local destinations and requires a per-run credential, but there is no destination allowlist, and `allow_private_egress` re-opens all of it at once. | [#15](https://github.com/leopepe/sandme/issues/15) |
 | `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
 | macOS `/usr/bin/git` is an `xcrun` shim that caches into `$TMPDIR` under `/private/var/folders`. Without `gui_mode` that write is denied and git fails with `Operation not permitted` — the message names `xcrun_db`, not sandme. Run with `gui_mode` on, which grants the temp directories. | [#29](https://github.com/leopepe/sandme/issues/29) |
