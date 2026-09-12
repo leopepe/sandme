@@ -23,12 +23,12 @@ pub fn locate(program: &str) -> Option<PathBuf> {
 /// `execvp` failure as one status and names the cause only in prose on the
 /// child's stderr, so sandme works the cause out from the filesystem instead:
 /// the child's streams are the child's, and parsing them would make sandme's
-/// exit status depend on another tool's wording (NFR-201).
+/// exit status depend on another tool's wording (NFR-801).
 ///
 /// `None` covers both "this is runnable" and "this is unrunnable for a reason
 /// sandme cannot see" — an unknown interpreter after `#!`, a binary for
 /// another architecture. Those keep `sandbox-exec`'s own status: a wrong
-/// answer is worse than an opaque one (FR-203, FR-204).
+/// answer is worse than an opaque one (FR-803, FR-804).
 pub fn exec_failure(program: &str) -> Option<SandmeError> {
     let mut found = false;
     for candidate in candidates(program) {
@@ -114,7 +114,7 @@ mod tests {
     #[test]
     fn reports_no_failure_for_an_executable() {
         // Both spellings a user can write, and nothing but the filesystem is
-        // consulted to answer either (NFR-201).
+        // consulted to answer either (NFR-801).
         assert!(exec_failure("sh").is_none());
         assert!(exec_failure("/bin/sh").is_none());
     }

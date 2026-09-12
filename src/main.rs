@@ -19,7 +19,7 @@ use clap::Parser;
 
 use crate::error::SandmeError;
 
-/// The status reserved for a failure of sandme's own (FR-201).
+/// The status reserved for a failure of sandme's own (FR-801).
 ///
 /// `env(1)` and `timeout(1)` reserve the same one, for the same reason: `1` is
 /// what `wc` returns for a missing file and `grep` for no match, so a wrapper
@@ -27,10 +27,10 @@ use crate::error::SandmeError;
 /// command it was asked to run.
 const SANDME_FAILURE: u8 = 125;
 
-/// The status for a command that was found but could not be executed (FR-204).
+/// The status for a command that was found but could not be executed (FR-804).
 const NOT_EXECUTABLE: u8 = 126;
 
-/// The status for a command that could not be found (FR-203).
+/// The status for a command that could not be found (FR-803).
 const NOT_FOUND: u8 = 127;
 
 /// sandme — run an IDE or code agent inside a macOS Seatbelt sandbox
@@ -68,7 +68,7 @@ async fn main() -> ExitCode {
         Err(error) => {
             // The prefix is what tells a caller the line is sandme's and not
             // the command's (posix.md §3), and with a reserved status it is
-            // the only channel that says so unambiguously (FR-202).
+            // the only channel that says so unambiguously (FR-802).
             eprintln!("sandme: {error}");
             failure_code(&error)
         }
@@ -110,7 +110,7 @@ async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
 /// Follows the exec-wrapper convention (docs/guidelines/architecture/posix.md
 /// §4): the child's status is propagated unchanged, and termination by a
 /// signal becomes `128+n`. A command that chose `125`, `126` or `127` for
-/// itself keeps it — reserving a status binds sandme, not the child (FR-205).
+/// itself keeps it — reserving a status binds sandme, not the child (FR-805).
 fn exit_code(status: ExitStatus) -> ExitCode {
     if status.success() {
         return ExitCode::SUCCESS;

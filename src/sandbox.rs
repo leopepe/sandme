@@ -146,7 +146,7 @@ pub async fn run(
     // posix.md §4 names it was is not in the status, so it is worked out from
     // the filesystem; a 71 that resolution cannot explain — a profile that
     // would not compile, or a command that ran and chose 71 for itself —
-    // passes through untouched (FR-203, FR-204).
+    // passes through untouched (FR-803, FR-804).
     if status.code() == Some(EXEC_FAILED)
         && let Some(error) = executable::exec_failure(&program)
     {

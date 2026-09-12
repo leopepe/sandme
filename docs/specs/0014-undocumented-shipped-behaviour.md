@@ -1,4 +1,4 @@
-# SPEC-0013: Shipped behaviour no requirement covered
+# SPEC-0014: Shipped behaviour no requirement covered
 
 ## Metadata
 
@@ -22,20 +22,20 @@ it does not change behaviour.
 
 ### ADDED
 
-- **FR-1301** … **FR-1304** below.
+- **FR-1401** … **FR-1404** below.
 
 ### MODIFIED
 
 - **SPEC-0001/Interface contract — the `<command> [args...]` operand row** — was: *"the child
   receives its own argument vector."* Now: on the multi-operand (direct-exec) path, WHERE the
   named program is a macOS app-bundle CLI wrapper, sandme launches the bundle's own main
-  executable in place of the named program (FR-1302). The single-operand `/bin/sh -c` path is
+  executable in place of the named program (FR-1402). The single-operand `/bin/sh -c` path is
   unaffected. Reason: SPEC-0001 stated the child runs exactly what the user named, but the
   app-bundle redirect (PR [#21](https://github.com/leopepe/sandme/pull/21)) deliberately runs a
   different program so that a sandboxed IDE wrapper — which would otherwise ask LaunchServices to
   open the app, a request the sandbox denies — starts at all.
 - **SPEC-0001/SC-002** — was: *"A process running under sandme … cannot read or write filesystem
-  locations outside the shared paths."* Now qualified by FR-1301: the profile additionally grants
+  locations outside the shared paths."* Now qualified by FR-1401: the profile additionally grants
   read+write on the `/dev/fd` subtree. `/dev/fd/N` names the process's *own* already-open file
   descriptors, not arbitrary filesystem locations, so the grant does not widen the set of files a
   sandboxed command can reach; SC-002 holds in substance. Recorded because the grant is, literally,
@@ -120,19 +120,19 @@ port, so that concurrent runs do not collide on a fixed port.
 
 ### Functional
 
-- **FR-1301**: THE SYSTEM SHALL grant the sandboxed command read and write access to the `/dev/fd`
+- **FR-1401**: THE SYSTEM SHALL grant the sandboxed command read and write access to the `/dev/fd`
   subtree, so that `/dev/fd/N` paths a shell hands to process substitution resolve. The grant
   exposes the process's own open file descriptors only; it does not name any other filesystem
   location.
-- **FR-1302**: WHERE a program named on the multi-operand (direct-exec) path resolves to an
+- **FR-1402**: WHERE a program named on the multi-operand (direct-exec) path resolves to an
   executable inside a macOS `.app` bundle whose `Contents/Info.plist` names a usable
   `CFBundleExecutable` that exists and differs from the resolved program, THE SYSTEM SHALL launch
   that bundle main executable in place of the named program. Otherwise it SHALL launch the program
   as written.
-- **FR-1303**: IF a named program is an app-bundle CLI wrapper but its `Contents/Info.plist` cannot
+- **FR-1403**: IF a named program is an app-bundle CLI wrapper but its `Contents/Info.plist` cannot
   be read, names no usable `CFBundleExecutable`, or names one that does not exist, THEN THE SYSTEM
   SHALL write one `sandme: `-prefixed diagnostic to stderr and launch the program as written.
-- **FR-1304**: WHEN `proxy_port` is `0` THE SYSTEM SHALL bind an operating-system-chosen ephemeral
+- **FR-1404**: WHEN `proxy_port` is `0` THE SYSTEM SHALL bind an operating-system-chosen ephemeral
   loopback port, discover the port actually bound, and publish that port to the sandboxed command
   in the proxy URL and in the Seatbelt profile's network-outbound rule.
 
@@ -142,13 +142,13 @@ port, so that concurrent runs do not collide on a fixed port.
 
 | Key | Env var | Type | Default | Description |
 | --- | --- | --- | --- | --- |
-| `proxy_port` | `SANDME_PROXY_PORT` | integer (u16) | `8787` | Loopback port the egress proxy listens on. `0` means the OS picks a free ephemeral port (FR-1304). |
+| `proxy_port` | `SANDME_PROXY_PORT` | integer (u16) | `8787` | Loopback port the egress proxy listens on. `0` means the OS picks a free ephemeral port (FR-1404). |
 
 **Errors**
 
 | Channel | Condition | Message to user |
 | --- | --- | --- |
-| stderr | FR-1303 — an app-bundle wrapper's `Info.plist` is unreadable or unusable | `sandme: <program> is the CLI wrapper of the app bundle <bundle>, but <reason>; running it unchanged, which macOS may refuse inside the sandbox` |
+| stderr | FR-1403 — an app-bundle wrapper's `Info.plist` is unreadable or unusable | `sandme: <program> is the CLI wrapper of the app bundle <bundle>, but <reason>; running it unchanged, which macOS may refuse inside the sandbox` |
 
 No new CLI flag and no new exit code.
 
@@ -169,26 +169,26 @@ No new CLI flag and no new exit code.
 
 ## Success criteria *(mandatory)*
 
-- **SC-1301**: A sandboxed process-substitution pipeline that reads `/dev/fd/N` succeeds.
-- **SC-1302**: A sandboxed IDE launched through its app-bundle CLI wrapper starts the bundle's main
+- **SC-1401**: A sandboxed process-substitution pipeline that reads `/dev/fd/N` succeeds.
+- **SC-1402**: A sandboxed IDE launched through its app-bundle CLI wrapper starts the bundle's main
   executable, and an unreadable bundle produces the stderr diagnostic and still attempts the run.
-- **SC-1303**: With `proxy_port = 0`, a sandboxed command reaches the proxy on the OS-chosen port
+- **SC-1403**: With `proxy_port = 0`, a sandboxed command reaches the proxy on the OS-chosen port
   with no manual configuration.
 
 ## Verification
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-1301 | `grants_dev_fd_read_write` (`src/profile.rs`) asserts the profile contains `(allow file-read* file-write* (subpath "/dev/fd"))` |
-| FR-1302 | `finds_the_bundle_a_wrapper_lives_in`, `reads_the_executable_name_from_a_plist`, `ignores_an_executable_name_that_escapes_the_bundle` (`src/app_bundle.rs`) — the redirect's inputs: locating the bundle, reading the executable name, and the path-escape guard. (Gap: no single test asserts the assembled `main_executable` redirect end to end; see Assumptions.) |
-| FR-1303 | `reports_an_app_bundle_it_cannot_read` (`tests/cli.rs`) drives the binary and asserts the stderr diagnostic; `ignores_a_plist_without_the_key`, `ignores_an_empty_executable_name` (`src/app_bundle.rs`) cover the unusable-`Info.plist` branches |
-| FR-1304 | `routes_http_egress_through_the_proxy`, `no_manual_proxy_configuration_needed` (`tests/cli.rs`) — the whole integration suite runs with `SANDME_PROXY_PORT=0` (the `sandme_at` helper), so the child reaching the proxy proves the OS-chosen port is bound, discovered and published |
+| FR-1401 | `grants_dev_fd_read_write` (`src/profile.rs`) asserts the profile contains `(allow file-read* file-write* (subpath "/dev/fd"))` |
+| FR-1402 | `finds_the_bundle_a_wrapper_lives_in`, `reads_the_executable_name_from_a_plist`, `ignores_an_executable_name_that_escapes_the_bundle` (`src/app_bundle.rs`) — the redirect's inputs: locating the bundle, reading the executable name, and the path-escape guard. (Gap: no single test asserts the assembled `main_executable` redirect end to end; see Assumptions.) |
+| FR-1403 | `reports_an_app_bundle_it_cannot_read` (`tests/cli.rs`) drives the binary and asserts the stderr diagnostic; `ignores_a_plist_without_the_key`, `ignores_an_empty_executable_name` (`src/app_bundle.rs`) cover the unusable-`Info.plist` branches |
+| FR-1404 | `routes_http_egress_through_the_proxy`, `no_manual_proxy_configuration_needed` (`tests/cli.rs`) — the whole integration suite runs with `SANDME_PROXY_PORT=0` (the `sandme_at` helper), so the child reaching the proxy proves the OS-chosen port is bound, discovered and published |
 
 ## Assumptions
 
 - **The `/dev/fd` grant is not an SC-002 widening.** `/dev/fd/N` names descriptors the process
   already holds, so the grant cannot reach a file the process could not already reach. Captured as
-  FR-1301 and reflected in the SC-002 delta rather than treated as a defect.
+  FR-1401 and reflected in the SC-002 delta rather than treated as a defect.
 - **The app-bundle redirect's happy path is verified by its components, not end to end.** The
   bundle-location, plist-parse and path-escape unit tests exist; a single test asserting
   `main_executable` returns the redirect path for a valid bundle does not. Recorded as a tracked
@@ -207,15 +207,15 @@ as a tracked gap under Assumptions.
 
 ## Implementation tasks
 
-- [x] **T-1301** — Retroactively state the `/dev/fd` grant as FR-1301, traceable to
+- [x] **T-1401** — Retroactively state the `/dev/fd` grant as FR-1401, traceable to
   `grants_dev_fd_read_write` (behaviour shipped in PR #17).
-- [x] **T-1302** — State the app-bundle redirect (FR-1302) and its diagnostic (FR-1303), and the
+- [x] **T-1402** — State the app-bundle redirect (FR-1402) and its diagnostic (FR-1403), and the
   MODIFIED SPEC-0001 Interface-contract delta (behaviour shipped in PR #21).
-- [x] **T-1303** — State `proxy_port = 0` as FR-1304, traceable to the port-0 integration suite.
-- [x] **T-1304** — Record the `HOME`-unset fallback as a tracked gap under Open questions.
+- [x] **T-1403** — State `proxy_port = 0` as FR-1404, traceable to the port-0 integration suite.
+- [x] **T-1404** — Record the `HOME`-unset fallback as a tracked gap under Open questions.
 
 ## Changelog
 
 | Date | Change |
 | --- | --- |
-| 2026-09-12 | Initial spec, reconciling shipped-but-unspecified behaviour from [#34](https://github.com/leopepe/sandme/issues/34) item 5: `/dev/fd` (FR-1301), the app-bundle redirect (FR-1302/FR-1303, MODIFYING SPEC-0001's argument-vector clause and SC-002), and `proxy_port = 0` (FR-1304). The `HOME`-unset config fallback is recorded as a tracked gap; the IPv6 listener is noted as already specified by SPEC-0003 and SPEC-0011. Status `Implemented`: every stated requirement's behaviour is on `main` and its Verification test exists. |
+| 2026-09-12 | Initial spec, reconciling shipped-but-unspecified behaviour from [#34](https://github.com/leopepe/sandme/issues/34) item 5: `/dev/fd` (FR-1401), the app-bundle redirect (FR-1402/FR-1403, MODIFYING SPEC-0001's argument-vector clause and SC-002), and `proxy_port = 0` (FR-1404). The `HOME`-unset config fallback is recorded as a tracked gap; the IPv6 listener is noted as already specified by SPEC-0003 and SPEC-0011. Status `Implemented`: every stated requirement's behaviour is on `main` and its Verification test exists. |
