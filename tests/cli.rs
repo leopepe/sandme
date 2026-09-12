@@ -7,10 +7,21 @@ use std::process::Command;
 /// A scratch directory standing in for the user's filesystem; recreated
 /// fresh on every run.
 fn workdir(name: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("sandme-test-{name}"));
+    let dir = scratch_path(name);
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     dir
+}
+
+/// A scratch path unique to this test process.
+///
+/// The process id keeps two suites running at once (a CI runner with two jobs)
+/// from sharing a path and deleting each other's directories mid-test — the
+/// name alone is shared across processes (issue #35). The `remove_dir_all` in
+/// `workdir` now only ever clears this process's own leftover from a crashed
+/// prior run that reused the pid, never a live sibling's.
+fn scratch_path(name: &str) -> PathBuf {
+    std::env::temp_dir().join(format!("sandme-test-{}-{name}", std::process::id()))
 }
 
 /// The sandme binary under test, isolated from the developer's real config.
@@ -113,7 +124,7 @@ fn reports_signal_deaths_as_128_plus_n() {
 fn denies_writes_outside_shared_paths() {
     // Given a shared directory and a path outside it
     let dir = workdir("denies-writes-outside-shared-paths");
-    let outside = std::env::temp_dir().join("sandme-test-denied-target");
+    let outside = scratch_path("denied-target");
     let _ = std::fs::remove_dir_all(&outside);
     std::fs::create_dir_all(&outside).unwrap();
     let target = outside.join("should-not-exist");
@@ -167,7 +178,7 @@ async fn routes_http_egress_through_the_proxy() {
 fn denies_subprocess_access_outside_shared_paths() {
     // Given a shared directory and a path outside it
     let dir = workdir("denies-subprocess-access-outside-shared-paths");
-    let outside = std::env::temp_dir().join("sandme-test-subprocess-denied");
+    let outside = scratch_path("subprocess-denied");
     let _ = std::fs::remove_dir_all(&outside);
     std::fs::create_dir_all(&outside).unwrap();
     let target = outside.join("should-not-exist");
