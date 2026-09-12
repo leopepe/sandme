@@ -73,18 +73,18 @@ environment always wins.
 
 | Key | Environment variable | Type | Default | What it does |
 | --- | --- | --- | --- | --- |
-| `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | `["~/"]` | Paths the sandboxed command may **read and write**. `~/` expands to your home directory; symlinks are resolved. |
+| `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | the current working directory | Paths the sandboxed command may **read and write**. `~/` expands to your home directory; symlinks are resolved. Set `["~/"]` to share your whole home. |
 | `proxy_port` | `SANDME_PROXY_PORT` | integer | `8787` | Loopback port the egress proxy listens on. `0` picks a free port — use it when running several `sandme` invocations at once. |
-| `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `~/Library`, `/private/tmp` and `/private/var/folders`. GUI apps and most editors need this for their state, caches and scratch space. |
+| `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `~/Library` and to your per-user temp directory (`$TMPDIR`). GUI apps and most editors need this for their state, caches and scratch space. |
 | `allow_private_egress` | `SANDME_ALLOW_PRIVATE_EGRESS` | boolean (env: `1` or `true`) | `false` | Lets the proxy relay to your own machine and network — loopback, RFC1918, link-local. Needed for a locally hosted service (a local model server, a dev API); see [Network](#what-the-sandbox-allows) for what it re-opens. |
 
 No config file is required — without one you get the defaults. A malformed file is reported
 rather than ignored.
 
-> **The default shares your whole home directory.** `shared_paths` defaults to `["~/"]`, so out of
-> the box the sandboxed command can read and write everything under `~`, including `~/.ssh` and
-> `~/.aws`. If you are sandboxing something you do not fully trust, narrow it to the project you
-> are working on. See [Known limitations](#known-limitations).
+> **The default shares the directory you run `sandme` in.** `shared_paths` defaults to the current
+> working directory, so out of the box the sandboxed command reads and writes that directory and
+> nothing else under `~` — `~/.ssh` and `~/.aws` are not exposed. To share more, name it in
+> `shared_paths`; `["~/"]` restores the old whole-home behaviour.
 
 ### A starting config
 
@@ -104,8 +104,12 @@ There is a fuller, commented version in [`examples/config.toml`](examples/config
 
 **Filesystem.** Read-only access to the system runtime — `/usr`, `/bin`, `/sbin`, `/System`,
 `/Library`, `/Applications`, `/private/etc`. Read+write to everything in `shared_paths`, plus —
-only with `gui_mode` — `~/Library` and the temp directories. Everything else is denied for both
-reading and writing.
+only with `gui_mode` — `~/Library` and your per-user temp directory (`$TMPDIR`). `gui_mode` does
+**not** open the world-shared `/private/tmp` or all of `/private/var/folders`, only the temp
+directory macOS gives your own session. Everything else is denied for both reading and writing.
+
+Cross-application AppleEvents (`osascript`-style scripting of other apps) are denied outright:
+the sandbox has no reason to drive another application.
 
 Three directories are denied outright, and no setting grants them back:
 
@@ -284,9 +288,7 @@ Read these before trusting the sandbox with something hostile.
 
 | | Issue |
 | --- | --- |
-| `shared_paths` defaults to your whole home directory, so out of the box the command reads and writes everything under `~` — `~/.ssh` and `~/.aws` included. | [#12](https://github.com/leopepe/sandme/issues/12) |
-| `gui_mode` widens the sandbox globally rather than per-app: it shares all of `/private/tmp` and `/private/var/folders`, not just the launched app's own container. | [#12](https://github.com/leopepe/sandme/issues/12) |
-| `mach-lookup` is allowed with no service allowlist, so `osascript` can talk to running apps. No escape has been demonstrated through it, but the channel is not closed. | [#12](https://github.com/leopepe/sandme/issues/12) |
+| `mach-lookup` is still allowed with no service allowlist. Cross-application AppleEvents are now denied (`appleevent-send`), but narrowing the mach-lookup family to an allowlist is deferred — no escape has been demonstrated, but the channel is not fully closed. | [#12](https://github.com/leopepe/sandme/issues/12) |
 | An app-bundle CLI wrapper is only redirected when it is the first word of the command; inside a compound shell string (`sandme 'cd ~/proj && zed .'`) it is left to the shell and fails. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Redirecting to the bundle executable loses the wrapper's own flags (`zed --wait`, `--version`) — the two binaries have different CLIs. Paths are unaffected. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | Process substitution needs an explicit shell — `/bin/sh` is bash in POSIX mode and has `<(…)` disabled — so use `sandme /bin/bash -c '…'`. And `diff <(a) <(b)` additionally needs `gui_mode`, because macOS `diff` copies non-seekable input to a temp file. | [#12](https://github.com/leopepe/sandme/issues/12) |
