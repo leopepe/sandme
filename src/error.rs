@@ -59,6 +59,34 @@ pub enum SandmeError {
         source: std::io::Error,
     },
 
+    /// The SSH tunnel (sandme run as ssh's `ProxyCommand`) found no proxy to
+    /// use: `HTTP_PROXY` is absent or not in the form sandme writes. This is a
+    /// sandme fault, not the user's — the child is always given the variable.
+    #[error("SSH tunnel: no usable HTTP_PROXY in the environment")]
+    TunnelProxyUnset,
+
+    /// The SSH tunnel could not reach sandme's proxy on loopback.
+    #[error("SSH tunnel: could not reach the proxy at {proxy}: {source}")]
+    TunnelUnreachable {
+        /// The proxy address the tunnel tried to reach.
+        proxy: std::net::SocketAddr,
+        /// The underlying I/O failure.
+        source: std::io::Error,
+    },
+
+    /// sandme's proxy declined the `CONNECT` for the SSH destination — a `403`
+    /// means the host is on a range the proxy will not relay to (SPEC-0003
+    /// FR-201), which HTTPS egress would hit the same way.
+    #[error("SSH tunnel: proxy declined CONNECT to {host}:{port} (HTTP {status})")]
+    TunnelRefused {
+        /// The SSH host ssh asked to reach.
+        host: String,
+        /// The SSH port ssh asked to reach.
+        port: String,
+        /// The HTTP status the proxy answered the `CONNECT` with.
+        status: String,
+    },
+
     /// A path bound for the sandbox profile carries a character that could
     /// break out of its SBPL string literal; the invocation fails rather than
     /// emit a profile an attacker could have shaped.

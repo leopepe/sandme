@@ -10,6 +10,7 @@ mod executable;
 mod profile;
 mod proxy;
 mod sandbox;
+mod tunnel;
 
 use std::os::unix::process::ExitStatusExt;
 use std::process::{ExitCode, ExitStatus};
@@ -43,6 +44,23 @@ struct Cli {
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    // ssh's `ProxyCommand` re-executes sandme with this sentinel to open the
+    // SSH tunnel (issue #33). It is intercepted before the CLI is parsed
+    // because it is sandme's own private convention, not a documented flag, and
+    // it must not bring up a second proxy or sandbox — it runs *inside* one.
+    let raw: Vec<String> = std::env::args().collect();
+    if let [_, sentinel, host, port] = raw.as_slice()
+        && sentinel == tunnel::PROXY_COMMAND_ARG
+    {
+        return match tunnel::run(host, port).await {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("sandme: {error}");
+                ExitCode::from(SANDME_FAILURE)
+            }
+        };
+    }
+
     let cli = Cli::parse();
 
     match run(&cli.command).await {
@@ -108,6 +126,9 @@ fn failure_code(error: &SandmeError) -> ExitCode {
         | SandmeError::ConfigParse { .. }
         | SandmeError::Execute(_)
         | SandmeError::ProxyStartup { .. }
+        | SandmeError::TunnelProxyUnset
+        | SandmeError::TunnelUnreachable { .. }
+        | SandmeError::TunnelRefused { .. }
         | SandmeError::UnsafeProfilePath { .. } => ExitCode::from(SANDME_FAILURE),
     }
 }

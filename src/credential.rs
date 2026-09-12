@@ -71,8 +71,10 @@ fn read_random(bytes: &mut [u8]) -> Option<()> {
 /// Base64-encode `input` (RFC 4648 §4), for the `Basic` credential.
 ///
 /// Twenty lines against a new dependency for one header value, per the
-/// dependency rule in `AGENTS.md`.
-fn base64(input: &str) -> String {
+/// dependency rule in `AGENTS.md`. `pub(crate)` so the SSH tunnel
+/// ([`crate::tunnel`]) encodes the same credential the same way when it reads
+/// it back from `HTTP_PROXY`, rather than growing a second encoder.
+pub(crate) fn base64(input: &str) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     let mut encoded = String::new();
