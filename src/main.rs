@@ -70,7 +70,7 @@ async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
     // The profile is built here rather than inside `sandbox::run`, so that
     // running a command under a profile does not require holding the config
     // that produced it.
-    let profile = profile::generate_profile(&config, server.addr());
+    let profile = profile::generate_profile(&config, server.addr())?;
 
     // The server, not just its address: the child's proxy URL carries the
     // credential, so `run` needs both.
@@ -107,6 +107,7 @@ fn failure_code(error: &SandmeError) -> ExitCode {
         SandmeError::ConfigRead { .. }
         | SandmeError::ConfigParse { .. }
         | SandmeError::Execute(_)
-        | SandmeError::ProxyStartup { .. } => ExitCode::from(SANDME_FAILURE),
+        | SandmeError::ProxyStartup { .. }
+        | SandmeError::UnsafeProfilePath { .. } => ExitCode::from(SANDME_FAILURE),
     }
 }
