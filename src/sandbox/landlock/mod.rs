@@ -2,7 +2,7 @@
 //!
 //! Landlock is an allow-only union of path and TCP-port rules with no deny
 //! primitive, applied to the process after `fork` and before `exec` — there is
-//! no `sandbox-exec` wrapper (unlike [`crate::sandbox::seatbelt`]). The policy
+//! no `sandbox-exec` wrapper (unlike the macOS `seatbelt` backend). The policy
 //! decision (which paths, rights and ports) lives in the `cfg`-neutral [`plan`]
 //! module, so it compiles and unit-tests on macOS. Everything that needs a
 //! Linux kernel — the `landlock` crate calls, the `pre_exec` glue, the ABI
@@ -221,10 +221,24 @@ mod backend {
         paths: &[PathBuf],
         access: BitFlags<AccessFs>,
     ) -> Result<RulesetCreated, SandmeError> {
+        let file_access = AccessFs::from_file(REQUIRED_ABI);
         for path in paths {
             let Ok(fd) = PathFd::new(path) else { continue };
+            // Directory-only rights (ReadDir, MakeDir, …) are illegal on a
+            // regular file or device node; under HardRequirement the crate
+            // rejects such a rule outright. Narrow the grant to the
+            // file-legitimate rights for any non-directory path (e.g.
+            // /bin/bash, /dev/null, /dev/ptmx).
+            let effective = if path.is_dir() {
+                access
+            } else {
+                access & file_access
+            };
+            if effective.is_empty() {
+                continue;
+            }
             created = created
-                .add_rule(PathBeneath::new(fd, access))
+                .add_rule(PathBeneath::new(fd, effective))
                 .map_err(rule_error)?;
         }
         Ok(created)
