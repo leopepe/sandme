@@ -52,7 +52,7 @@ impl Backend for Seatbelt {
         program: &str,
         args: &[String],
         config: &Config,
-        proxy: SocketAddr,
+        proxy: Option<SocketAddr>,
     ) -> Result<tokio::process::Command, SandmeError> {
         let profile = profile::generate_profile(config, proxy)?;
         let mut command = tokio::process::Command::new("sandbox-exec");
