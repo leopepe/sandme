@@ -87,6 +87,40 @@ pub enum SandmeError {
         status: String,
     },
 
+    /// The running kernel cannot enforce the Landlock sandbox this invocation
+    /// needs (Landlock absent or disabled, or its ABI below the v4 floor that
+    /// outbound TCP-port restriction requires). sandme refuses to run rather
+    /// than run the command unconfined or with egress unrestricted — the Linux
+    /// counterpart of Seatbelt's all-or-nothing guarantee (SPEC-0016).
+    #[error("this kernel cannot enforce the sandbox: {reason}; refusing to run the command")]
+    // Constructed only by the Linux backend; on other targets it is matched in
+    // `main::failure_code` but never built, which dead-code analysis counts as
+    // unconstructed. Allow that off Linux.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    SandboxNotEnforced {
+        /// Why enforcement is impossible, phrased for the user.
+        reason: String,
+    },
+
+    /// A `shared_paths` entry names `/`, a protected pseudo-filesystem
+    /// (`/proc`, `/sys`), or a lexical ancestor of one. Under Landlock's
+    /// allow-only, recursive grant that would re-admit `/proc/<pid>/environ`
+    /// (issue #31) with no deny primitive to carve it back out, so sandme
+    /// refuses to run rather than grant the leak back (SPEC-0016, D5).
+    #[error(
+        "shared path {path:?} would grant a protected system tree (/proc or /sys); \
+         narrow it to the directory you actually need; refusing to run"
+    )]
+    // Constructed only by the Linux backend's shared-path guard; on other
+    // targets `plan::guard_shared_path` has no non-test caller, so a non-test
+    // build never builds this variant, which dead-code analysis counts as
+    // unconstructed. Allow that off Linux.
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    SharedPathTooBroad {
+        /// The offending `shared_paths` entry, as configured.
+        path: String,
+    },
+
     /// A path bound for the sandbox profile carries a character that could
     /// break out of its SBPL string literal; the invocation fails rather than
     /// emit a profile an attacker could have shaped.
