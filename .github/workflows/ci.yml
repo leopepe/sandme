@@ -38,12 +38,16 @@ jobs:
   test:
     name: test (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
+    # A stuck or unschedulable runner fails fast instead of hanging for hours.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
+        # macOS is Apple Silicon only (macos-14). Intel x86_64 macOS (macos-13)
+        # is dropped: it is Apple's EOL platform and GitHub's Intel runner pool
+        # is deprecated/capacity-starved, so that leg queued indefinitely.
         include:
           - { os: macos-14, target: aarch64-apple-darwin }
-          - { os: macos-13, target: x86_64-apple-darwin }
           - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
           - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
     steps:
