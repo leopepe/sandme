@@ -8,7 +8,7 @@
 //! names.
 
 use std::env;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -94,9 +94,15 @@ fn default_allow_private_egress() -> bool {
     false
 }
 
-/// Resolve the config file path (~/.sandme/config.toml).
-pub fn config_path() -> PathBuf {
-    let Some(home) = env::var("HOME").ok().map(PathBuf::from) else {
+/// Resolve the config file path (~/.sandme/config.toml) from an injected
+/// `home`, the home-parameterized config-path helper.
+///
+/// Derives the path from `home` alone, falling back to a relative path when no
+/// home is available. Reads no process environment: [`load`] resolves `$HOME`
+/// once at the adapter boundary and passes it in, and tests drive it with a
+/// temp directory instead of mutating `$HOME`.
+fn config_path(home: Option<&Path>) -> PathBuf {
+    let Some(home) = home else {
         return PathBuf::from("./config.toml");
     };
     home.join(".sandme").join("config.toml")
@@ -123,10 +129,19 @@ pub struct Loaded {
 /// 4. Warn about any security-widening setting the environment — not the config
 ///    file — supplied (FR-1001, issue #30).
 pub fn load() -> Result<Loaded, SandmeError> {
+    load_from(env::var("HOME").ok().map(PathBuf::from).as_deref())
+}
+
+/// Load configuration for an injected `home`, the pure-of-`$HOME` core of
+/// [`load`]. The config-file path is derived from `home` alone (via
+/// [`config_path`]); tests supply a temp directory here rather than
+/// mutating the process `$HOME`. The `SANDME_*` environment overrides are still
+/// read from the process environment — injecting those is out of scope.
+fn load_from(home: Option<&Path>) -> Result<Loaded, SandmeError> {
     let mut config = Config::default();
     let mut file = FileKeys::default();
 
-    let path = config_path();
+    let path = config_path(home);
     if path.exists() {
         let content = std::fs::read_to_string(&path).map_err(|source| SandmeError::ConfigRead {
             path: path.clone(),
@@ -354,21 +369,19 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn keeps_defaults_for_absent_settings() {
-        // Given a HOME directory with no config file
-        // (one test owns HOME to keep the suite parallel-safe;
-        // the calls are safe here: this single test is its only writer)
+        // Given an injected home directory with no config file
         let dir = std::env::temp_dir().join("sandme-test-keeps-defaults");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let original_home = std::env::var("HOME").ok();
+        // The `SANDME_*` variables are process-wide; this test owns them (hence
+        // `#[serial]`). HOME is injected by argument, not mutated.
         unsafe {
-            std::env::set_var("HOME", &dir);
             std::env::remove_var("SANDME_SHARED_PATHS");
             std::env::remove_var("SANDME_PROXY_PORT");
         }
 
-        // When the configuration is loaded
-        let config = load().unwrap().config;
+        // When the configuration is loaded for that home
+        let config = load_from(Some(dir.as_path())).unwrap().config;
 
         // Then the defaults are returned — for shared_paths, the documented
         // default (the working directory) rather than serde's empty Vec, which
@@ -377,13 +390,6 @@ mod tests {
         assert!(!config.shared_paths.is_empty());
         assert_eq!(config.proxy_port, 8787);
 
-        // Restore HOME
-        unsafe {
-            match original_home {
-                Some(home) => std::env::set_var("HOME", home),
-                None => std::env::remove_var("HOME"),
-            }
-        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -391,21 +397,19 @@ mod tests {
     #[serial_test::serial]
     fn keeps_defaults_for_keys_a_config_file_omits() {
         // Given a config file that sets one key and leaves the rest out
-        // (one test owns HOME to keep the suite parallel-safe;
-        // the calls are safe here: this single test is its only writer)
         let dir = std::env::temp_dir().join("sandme-test-partial-config-file");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".sandme")).unwrap();
         std::fs::write(dir.join(".sandme/config.toml"), "proxy_port = 9000\n").unwrap();
-        let original_home = std::env::var("HOME").ok();
+        // The `SANDME_*` variables are process-wide; this test owns them (hence
+        // `#[serial]`). HOME is injected by argument, not mutated.
         unsafe {
-            std::env::set_var("HOME", &dir);
             std::env::remove_var("SANDME_SHARED_PATHS");
             std::env::remove_var("SANDME_PROXY_PORT");
         }
 
-        // When the configuration is loaded
-        let config = load().unwrap().config;
+        // When the configuration is loaded for that home
+        let config = load_from(Some(dir.as_path())).unwrap().config;
 
         // Then the key the file sets is honoured, and the omitted keys keep
         // the documented defaults rather than serde's empty ones. Before this
@@ -417,13 +421,6 @@ mod tests {
         assert!(!config.gui_mode);
         assert!(!config.allow_private_egress);
 
-        // Restore HOME
-        unsafe {
-            match original_home {
-                Some(home) => std::env::set_var("HOME", home),
-                None => std::env::remove_var("HOME"),
-            }
-        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -620,21 +617,19 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn load_warns_when_the_environment_enables_private_egress() {
-        // Given a HOME with no config file and the setting on in the environment
-        // (one test owns HOME and this variable to keep the suite parallel-safe;
-        // the calls are safe here: this single test is their only writer)
+        // Given an injected home with no config file and the setting on in the
+        // environment. The `SANDME_*` variables are process-wide; this test owns
+        // them (hence `#[serial]`). HOME is injected by argument, not mutated.
         let dir = std::env::temp_dir().join("sandme-test-load-warns-egress");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let original_home = std::env::var("HOME").ok();
         unsafe {
-            std::env::set_var("HOME", &dir);
             std::env::remove_var("SANDME_SHARED_PATHS");
             std::env::set_var("SANDME_ALLOW_PRIVATE_EGRESS", "1");
         }
 
-        // When the configuration is loaded
-        let loaded = load().unwrap();
+        // When the configuration is loaded for that home
+        let loaded = load_from(Some(dir.as_path())).unwrap();
 
         // Then the setting takes effect (the warning informs, it does not veto)
         // and a warning names it and the variable that carried it (FR-1001)
@@ -651,10 +646,6 @@ mod tests {
 
         unsafe {
             std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS");
-            match original_home {
-                Some(home) => std::env::set_var("HOME", home),
-                None => std::env::remove_var("HOME"),
-            }
         }
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -662,9 +653,9 @@ mod tests {
     #[test]
     #[serial_test::serial]
     fn load_stays_silent_when_the_config_file_enables_private_egress() {
-        // Given a config file that enables the setting and no env override
-        // (one test owns HOME and this variable to keep the suite parallel-safe;
-        // the calls are safe here: this single test is their only writer)
+        // Given a config file that enables the setting and no env override. The
+        // `SANDME_*` variables are process-wide; this test owns them (hence
+        // `#[serial]`). HOME is injected by argument, not mutated.
         let dir = std::env::temp_dir().join("sandme-test-load-silent-egress");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(dir.join(".sandme")).unwrap();
@@ -673,27 +664,19 @@ mod tests {
             "allow_private_egress = true\n",
         )
         .unwrap();
-        let original_home = std::env::var("HOME").ok();
         unsafe {
-            std::env::set_var("HOME", &dir);
             std::env::remove_var("SANDME_SHARED_PATHS");
             std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS");
         }
 
-        // When the configuration is loaded
-        let loaded = load().unwrap();
+        // When the configuration is loaded for that home
+        let loaded = load_from(Some(dir.as_path())).unwrap();
 
         // Then the setting is on but nothing is warned: the user set it in a
         // file the sandbox denies the child (FR-1002)
         assert!(loaded.config.allow_private_egress);
         assert!(loaded.warnings.is_empty(), "got: {:?}", loaded.warnings);
 
-        unsafe {
-            match original_home {
-                Some(home) => std::env::set_var("HOME", home),
-                None => std::env::remove_var("HOME"),
-            }
-        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
