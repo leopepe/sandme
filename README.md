@@ -74,7 +74,9 @@ environment always wins.
 | Key | Environment variable | Type | Default | What it does |
 | --- | --- | --- | --- | --- |
 | `shared_paths` | `SANDME_SHARED_PATHS` | array of strings (env: comma-separated) | the current working directory | Paths the sandboxed command may **read and write**. `~/` expands to your home directory; symlinks are resolved. Set `["~/"]` to share your whole home. |
-| `proxy_port` | `SANDME_PROXY_PORT` | integer | `8787` | Loopback port the egress proxy listens on. `0` picks a free port — use it when running several `sandme` invocations at once. |
+| `read_only_paths` | `SANDME_READ_ONLY_PATHS` | array of strings (env: comma-separated) | empty | Paths the sandboxed command may **read and execute** but **not write** — a toolchain prefix (a Homebrew directory, a language runtime) whose binaries must run while writes stay confined to `shared_paths`. `~/` expands and symlinks are resolved, as for `shared_paths`. |
+| `proxy` | `SANDME_PROXY` | boolean (env: `1` or `true`) | `true` | Whether to start the egress proxy and route the command through it. Set `false` to run with **no egress on macOS, and no outbound TCP on Linux** (see the note below). |
+| `proxy_port` | `SANDME_PROXY_PORT` | integer | `0` | Loopback port the egress proxy listens on. `0` (the default) lets the OS pick a free ephemeral port, so parallel `sandme` runs never collide. Set a non-zero value to pin a fixed, predictable port. |
 | `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `~/Library` and to your per-user temp directory (`$TMPDIR`). GUI apps and most editors need this for their state, caches and scratch space. |
 | `allow_private_egress` | `SANDME_ALLOW_PRIVATE_EGRESS` | boolean (env: `1` or `true`) | `false` | Lets the proxy relay to your own machine and network — loopback, RFC1918, link-local. Needed for a locally hosted service (a local model server, a dev API); see [Network](#what-the-sandbox-allows) for what it re-opens. |
 
@@ -86,16 +88,26 @@ rather than ignored.
 > nothing else under `~` — `~/.ssh` and `~/.aws` are not exposed. To share more, name it in
 > `shared_paths`; `["~/"]` restores the old whole-home behaviour.
 
+> **`proxy = false` disables all network remotes**, not just the HTTP proxy: with no proxy running
+> the command gets no `HTTP(S)_PROXY` and no git-over-SSH tunnel, so both HTTP(S) and git-over-SSH
+> remotes fail. That is the point — a no-network run — and an SSH git failure under `proxy = false`
+> is expected, not a bug. On macOS the sandbox denies all outbound network; on Linux it denies all
+> outbound TCP, while UDP and raw sockets stay unrestricted (a pre-existing Landlock limitation,
+> consistent with SPEC-0016's TCP-only egress model).
+
 ### A starting config
 
 ```toml
 # ~/.sandme/config.toml
 shared_paths = [
-  "~/Workspace",      # your projects — narrow this to taste
-  "/opt/homebrew",    # Homebrew toolchain (Apple silicon; use /usr/local on Intel)
+  "~/Workspace",           # your projects — narrow this to taste
 ]
-proxy_port = 8787
-gui_mode = true       # editors need ~/Library and scratch space
+read_only_paths = [
+  "/opt/homebrew",         # Homebrew toolchain (Apple silicon; use /usr/local on Intel) —
+                           # readable and runnable, but not writable
+]
+gui_mode = true            # editors need ~/Library and scratch space
+# proxy_port defaults to 0 (an OS-chosen ephemeral port); set it only to pin a fixed port.
 ```
 
 There is a fuller, commented version in [`examples/config.toml`](examples/config.toml).
@@ -276,10 +288,19 @@ confinement rather than the filesystem confinement.
 
 ### Several invocations at once
 
-The default port `8787` collides. Use an ephemeral port:
+Parallel proxied runs work out of the box: `proxy_port` defaults to `0`, so each invocation binds
+its own OS-chosen ephemeral port and none collide.
 
 ```shell
-SANDME_PROXY_PORT=0 sandme cargo test
+sandme cargo test &
+sandme cargo clippy &
+```
+
+To pin a fixed, predictable port for one run, set `proxy_port` explicitly (only one run may hold a
+given port at a time):
+
+```shell
+SANDME_PROXY_PORT=9000 sandme cargo test
 ```
 
 ## Known limitations
@@ -293,7 +314,6 @@ Read these before trusting the sandbox with something hostile.
 | Redirecting to the bundle executable loses the wrapper's own flags (`zed --wait`, `--version`) — the two binaries have different CLIs. Paths are unaffected. | [#13](https://github.com/leopepe/sandme/issues/13) |
 | `diff <(a) <(b)` needs `gui_mode`, because macOS `diff` copies non-seekable process-substitution input to a temp file under `$TMPDIR`. (Process substitution itself works in the single-operand form since it is routed through `/bin/bash`.) | [#12](https://github.com/leopepe/sandme/issues/12) |
 | The proxy runs unsandboxed. It now refuses loopback, RFC1918 and link-local destinations and requires a per-run credential, but there is no destination allowlist, and `allow_private_egress` re-opens all of it at once. | [#15](https://github.com/leopepe/sandme/issues/15) |
-| `shared_paths` grants read **and** write; there is no read-only share for toolchains. | [#10](https://github.com/leopepe/sandme/issues/10) |
 | macOS `/usr/bin/git` is an `xcrun` shim that caches into `$TMPDIR` under `/private/var/folders`. Without `gui_mode` that write is denied and git fails with `Operation not permitted` — the message names `xcrun_db`, not sandme. Run with `gui_mode` on, which grants the temp directories. | [#29](https://github.com/leopepe/sandme/issues/29) |
 | git cannot reach a real remote: SSH remotes (port 22) are denied by design — egress goes only through the proxy — and HTTPS remotes fall through to a username prompt with no terminal to answer it. | [#29](https://github.com/leopepe/sandme/issues/29) |
 

@@ -66,7 +66,7 @@ mod backend {
             program: &str,
             args: &[String],
             config: &Config,
-            proxy: SocketAddr,
+            proxy: Option<SocketAddr>,
         ) -> Result<tokio::process::Command, SandmeError> {
             // Parent probe (D2, step 1) — a clean, up-front diagnostic when the
             // kernel is too old. It is only a diagnostic; the child-side check
@@ -88,7 +88,12 @@ mod backend {
             // `$HOME` read for tilde expansion (the last direct one is gone).
             let env = plan_env();
             let shared = resolve_shared(&config.shared_paths, env.home.as_deref())?;
-            let access = plan::build_plan(config, &shared, proxy, &env);
+            // Read-only paths are resolved and guarded through the *same*
+            // twice-checked path as shared_paths — a `/` or `/proc` read grant
+            // would re-open the issue-#31 env leak exactly as a write grant
+            // would, so it gets no weaker guard (design D5).
+            let read_only = resolve_shared(&config.read_only_paths, env.home.as_deref())?;
+            let access = plan::build_plan(config, &shared, &read_only, proxy, &env);
             let ruleset = create_ruleset(&access)?;
 
             // The ruleset — and every PathFd inside it — is built here in the

@@ -20,8 +20,10 @@ use crate::error::SandmeError;
 /// Build the Seatbelt (SBPL) profile for one invocation.
 ///
 /// `config` supplies the paths to share and whether GUI mode is on; `proxy` is
-/// the address the egress proxy listens on, and the only destination the
-/// profile permits.
+/// the address the egress proxy listens on when one is running — the only
+/// destination the profile permits — or `None` when the proxy is disabled, in
+/// which case no egress line is emitted and the command has no network egress
+/// at all (design D1/D2).
 ///
 /// Returns the complete profile text: everything denied by default, then the
 /// process and file-read grants a command needs to start, the configuration's
@@ -53,7 +55,7 @@ use crate::error::SandmeError;
 /// `shared_paths` entry, `$HOME`, `$TMPDIR` or the working directory — carries
 /// a character that could break out of its SBPL string literal. See
 /// [`checked_profile_path`].
-pub fn generate_profile(config: &Config, proxy: SocketAddr) -> Result<String, SandmeError> {
+pub fn generate_profile(config: &Config, proxy: Option<SocketAddr>) -> Result<String, SandmeError> {
     // Resolve `$HOME` once at this adapter boundary and inject it into the pure
     // decision helpers below, mirroring the Landlock `plan_env()` precedent. The
     // lookup stays on `std::env::var` (String; `Err`/absent on a non-UTF-8
@@ -69,7 +71,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> Result<String, Sa
 /// home rather than mutating the process `$HOME`.
 fn generate_profile_with_home(
     config: &Config,
-    proxy: SocketAddr,
+    proxy: Option<SocketAddr>,
     home: Option<&Path>,
 ) -> Result<String, SandmeError> {
     let mut sbpl = String::from(
@@ -105,11 +107,23 @@ fn generate_profile_with_home(
 
     append_writable_grants(&mut sbpl, config, home)?;
 
-    let _ = writeln!(
-        sbpl,
-        "(allow network-outbound (remote ip \"localhost:{}\"))",
-        proxy.port()
-    );
+    // The one egress line is emitted only when a proxy is running (design D2).
+    // When the proxy is off, the base `(deny default)` already denies all
+    // outbound network, so the command has no egress — the default path (Some,
+    // empty read_only_paths) stays byte-for-byte identical (NFR-1601).
+    if let Some(proxy) = proxy {
+        let _ = writeln!(
+            sbpl,
+            "(allow network-outbound (remote ip \"localhost:{}\"))",
+            proxy.port()
+        );
+    }
+
+    // Read-only grants come after the writable grants and the conditional egress
+    // line, but before the unconditional denials, so the closing denials still
+    // win last-match and a read-only grant cannot resurrect a denied tree
+    // (design D5). Empty `read_only_paths` appends nothing (NFR-1601).
+    append_read_only_grants(&mut sbpl, config, home)?;
 
     append_unconditional_denials(&mut sbpl, home)?;
     Ok(sbpl)
@@ -192,6 +206,27 @@ fn append_writable_grants(
         }
     }
 
+    Ok(())
+}
+
+/// Append the read-only grants the configuration asks for (design D5).
+///
+/// Writes one `(allow file-read* (subpath "…"))` rule per entry in
+/// `config.read_only_paths` — read (and execute), never `file-write*` — with
+/// `~` expanded and symlinks resolved, reusing the same [`expand_path`] and
+/// [`checked_profile_path`] guard as the writable grants. Must be called after
+/// the writable grants and before [`append_unconditional_denials`], so the
+/// closing denials still win last-match. Empty `read_only_paths` writes
+/// nothing, keeping the default profile byte-for-byte unchanged (NFR-1601).
+fn append_read_only_grants(
+    sbpl: &mut String,
+    config: &Config,
+    home: Option<&Path>,
+) -> Result<(), SandmeError> {
+    for path in &config.read_only_paths {
+        let expanded = checked_profile_path(expand_path(path, home))?;
+        let _ = writeln!(sbpl, "(allow file-read* (subpath \"{expanded}\"))");
+    }
     Ok(())
 }
 
@@ -316,12 +351,15 @@ mod tests {
     /// or absent), so home-dependent behavior is exercised by argument rather
     /// than by mutating the process environment.
     fn profile_of_with_home(config: &Config, proxy: SocketAddr, home: Option<&Path>) -> String {
-        generate_profile_with_home(config, proxy, home).expect("a valid config generates a profile")
+        generate_profile_with_home(config, Some(proxy), home)
+            .expect("a valid config generates a profile")
     }
 
     fn config_with(paths: &[&str]) -> Config {
         Config {
             shared_paths: paths.iter().map(|p| (*p).to_string()).collect(),
+            read_only_paths: Vec::new(),
+            proxy: true,
             proxy_port: 8787,
             gui_mode: false,
             allow_private_egress: false,
@@ -570,7 +608,7 @@ mod tests {
         let injection = "/tmp/x\")) (allow default) (allow file-read* (subpath \"/";
         let result = generate_profile_with_home(
             &config_with(&[injection]),
-            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 1))),
             Some(Path::new(TEST_HOME)),
         );
 
@@ -591,5 +629,126 @@ mod tests {
         assert!(
             profile.contains("(allow file-read* file-write* (subpath \"/tmp/My Project (2024)\"))")
         );
+    }
+
+    /// A config with the given read-only paths and nothing else configured.
+    fn read_only_config_with(paths: &[&str]) -> Config {
+        Config {
+            read_only_paths: paths.iter().map(|p| (*p).to_string()).collect(),
+            ..config_with(&[])
+        }
+    }
+
+    #[test]
+    fn omits_the_egress_line_when_the_proxy_is_disabled() {
+        // Given the proxy is off (None), the network-outbound egress line is
+        // never emitted (design D2) — the base (deny default) denies all egress
+        let profile =
+            generate_profile_with_home(&config_with(&[]), None, Some(Path::new(TEST_HOME)))
+                .expect("a valid config generates a profile");
+
+        assert!(
+            !profile.contains("network-outbound (remote ip"),
+            "no IP egress line may appear when the proxy is off: {profile}"
+        );
+        // The unix-socket IPC lines are unrelated to the proxy and stay.
+        assert!(profile.contains("(allow network-outbound (remote unix-socket))"));
+    }
+
+    #[test]
+    fn the_default_proxy_on_profile_is_byte_for_byte_unchanged() {
+        // The default invocation — proxy on, empty read_only_paths — must
+        // produce exactly the profile it produced before this change: the
+        // network-outbound line in its original position and no read-only
+        // grants (SPEC-0016/NFR-1601). This spells out the whole expected text
+        // so any reordering or stray line fails here.
+        let profile = generate_profile_with_home(
+            &config_with(&[]),
+            Some(SocketAddr::from((Ipv4Addr::LOCALHOST, 8787))),
+            Some(Path::new(TEST_HOME)),
+        )
+        .expect("a valid config generates a profile");
+
+        let home = canonical_home(Some(Path::new(TEST_HOME))).expect("a home is injected");
+        let expected = format!(
+            "(version 1)\n\
+             (deny default)\n\
+             (allow process-exec)\n\
+             (allow process-fork)\n\
+             (allow process-info-pidinfo (target same-sandbox))\n\
+             (allow signal (target self))\n\
+             (allow sysctl-read)\n\
+             (allow mach-lookup)\n\
+             (allow mach-register)\n\
+             (allow mach-bootstrap)\n\
+             (allow iokit-open)\n\
+             (allow lsopen)\n\
+             (allow ipc-posix-shm*)\n\
+             (deny appleevent-send)\n\
+             (allow network-bind (local unix-socket))\n\
+             (allow network-outbound (remote unix-socket))\n\
+             (allow file-read-metadata)\n\
+             (allow file-read* file-write* (literal \"/dev/ptmx\"))\n\
+             (allow file-ioctl (literal \"/dev/ptmx\"))\n\
+             (allow file-read* file-write* (regex #\"^/dev/ttys[0-9]+$\"))\n\
+             (allow file-ioctl (regex #\"^/dev/ttys[0-9]+$\"))\n\
+             (allow file-read* file-write* (literal \"/dev/tty\") (literal \"/dev/null\"))\n\
+             (allow file-write* (literal \"/dev/null\"))\n\
+             (allow file-read* file-write* (subpath \"/dev/fd\"))\n\
+             (allow file-read* (literal \"/dev/random\") (literal \"/dev/urandom\"))\n\
+             (allow file-read* (literal \"/\"))\n\
+             (allow file-read* (subpath \"/usr\") (subpath \"/bin\") (subpath \"/sbin\") (subpath \"/System\") (subpath \"/Library\") (subpath \"/Applications\"))\n\
+             (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n\
+             (allow network-outbound (remote ip \"localhost:8787\"))\n\
+             (deny process-info*)\n\
+             (deny process-info-pidinfo)\n\
+             (deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n\
+             (deny file-read* file-write* (subpath \"{home}/Library/Keychains\"))\n\
+             (deny file-read* file-write* (subpath \"{home}/Library/LaunchAgents\"))\n\
+             (deny file-read* file-write* (subpath \"{home}/Library/LaunchDaemons\"))\n\
+             (deny file-write* (subpath \"{home}/.sandme\"))\n"
+        );
+
+        assert_eq!(profile, expected);
+    }
+
+    #[test]
+    fn grants_a_read_only_path_read_without_write() {
+        // Given a configured read-only path (an inert literal, so the guard
+        // admits it), it is granted file-read* subpath and never file-write*
+        let profile = profile_of(
+            &read_only_config_with(&["/tmp/toolchain"]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        assert!(profile.contains("(allow file-read* (subpath \"/tmp/toolchain\"))"));
+        assert!(
+            !profile.contains("file-write* (subpath \"/tmp/toolchain\")"),
+            "a read-only path must not be granted write: {profile}"
+        );
+    }
+
+    #[test]
+    fn read_only_grants_precede_the_unconditional_denials() {
+        // Given a read-only path, the closing denials still follow it, so
+        // last-match-wins keeps a denied tree denied (design D5)
+        let profile = profile_of(
+            &read_only_config_with(&["/tmp/toolchain"]),
+            SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+        );
+
+        let grant_at = profile
+            .find("(allow file-read* (subpath \"/tmp/toolchain\"))")
+            .expect("the read-only grant is present");
+        for denial in [
+            "(deny process-info*)",
+            "(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))",
+        ] {
+            let at = profile.find(denial).expect("the denial is present");
+            assert!(
+                at > grant_at,
+                "{denial} must come after the read-only grant"
+            );
+        }
     }
 }
