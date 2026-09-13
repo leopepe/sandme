@@ -16,6 +16,11 @@ use crate::proxy;
 #[cfg(target_os = "macos")]
 mod seatbelt;
 
+// Declared unconditionally so its `cfg`-neutral `plan` decision layer compiles
+// and unit-tests on every target, including this cycle's macOS host; the
+// Landlock backend itself is Linux-only, gated inside the module (SPEC-0015).
+mod landlock;
+
 /// The shell the single-operand form is routed through (SPEC-0013).
 ///
 /// `/bin/bash`, not `/bin/sh`: macOS's `/bin/sh` is bash in POSIX mode, where
@@ -99,10 +104,12 @@ pub async fn run(
     // clap's required trailing operand guarantees at least one word.
     assert!(!command.is_empty(), "clap requires at least one operand");
 
-    #[cfg(not(target_os = "macos"))]
-    compile_error!("sandme supports macOS only; the Linux (Landlock) backend is issue #8");
     #[cfg(target_os = "macos")]
     let backend = seatbelt::Seatbelt;
+    #[cfg(target_os = "linux")]
+    let backend = landlock::Landlock;
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    compile_error!("sandme supports macOS and Linux only");
 
     let (program, args) = backend.resolve(command);
     let mut child_command = backend.command(&program, &args, config, proxy.addr())?;

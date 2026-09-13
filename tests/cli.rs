@@ -208,6 +208,7 @@ fn canonical_workdir(name: &str) -> PathBuf {
 
 /// A `~/Library` populated the way a real one is, so a denial is proven by a
 /// refusal rather than by the path simply not being there.
+#[cfg(target_os = "macos")]
 fn home_library(dir: &Path) -> PathBuf {
     let library = dir.join("Library");
     std::fs::create_dir_all(library.join("LaunchAgents")).unwrap();
@@ -222,6 +223,7 @@ fn home_library(dir: &Path) -> PathBuf {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn denies_writing_a_launch_agent_even_when_the_whole_home_is_shared() {
     // Given the widest configuration sandme offers — the default share of the
     // whole home directory, plus GUI mode — and a real ~/Library/LaunchAgents.
@@ -245,6 +247,7 @@ fn denies_writing_a_launch_agent_even_when_the_whole_home_is_shared() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn denies_reading_the_keychains_even_when_the_whole_home_is_shared() {
     // Given the whole home shared, GUI mode on, and a keychain to read
     let dir = workdir("denies-reading-the-keychains");
@@ -266,6 +269,7 @@ fn denies_reading_the_keychains_even_when_the_whole_home_is_shared() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn denies_the_home_library_when_gui_mode_is_off() {
     // Given a narrow share that does not include ~/Library, and no GUI mode.
     // The home is named in resolved form so that the grant this test proves
@@ -334,6 +338,7 @@ fn denies_the_home_outside_the_working_directory_by_default() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn denies_the_world_temp_directory_under_gui_mode() {
     // Given GUI mode on, a scratch share, and a target directly under the
     // world-shared /private/tmp
@@ -358,6 +363,7 @@ fn denies_the_world_temp_directory_under_gui_mode() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn allows_a_git_style_temp_write_under_gui_mode() {
     // Given GUI mode on and a scratch share. The child inherits $TMPDIR, so it
     // writes to the same per-user temp directory git's xcrun shim uses (#29).
@@ -630,6 +636,7 @@ fn reads_the_random_devices() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn allocates_a_pseudo_terminal() {
     // Given a command that allocates a pseudo-terminal. `/usr/bin/script`
     // opens one with openpty(3) — the same path Zed's integrated terminal and
@@ -664,6 +671,7 @@ fn allocates_a_pseudo_terminal() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn controls_a_pseudo_terminal() {
     // Given a command that does what a terminal emulator does — allocate a PTY,
     // then claim the slave as its controlling terminal with `ioctl(TIOCSCTTY)`.
@@ -695,6 +703,7 @@ fn controls_a_pseudo_terminal() {
 ///
 /// `executable_name` is what the bundle's `Info.plist` names; `None` writes no
 /// `Info.plist` at all, standing in for a bundle sandme cannot read through.
+#[cfg(target_os = "macos")]
 fn fake_app_bundle(dir: &Path, executable_name: Option<&str>) -> String {
     let macos = dir.join("Fake.app/Contents/MacOS");
     std::fs::create_dir_all(&macos).unwrap();
@@ -722,6 +731,7 @@ fn fake_app_bundle(dir: &Path, executable_name: Option<&str>) -> String {
 }
 
 /// Write an executable `/bin/sh` script.
+#[cfg(target_os = "macos")]
 fn write_script(path: &Path, body: &str) {
     use std::os::unix::fs::PermissionsExt;
 
@@ -730,6 +740,7 @@ fn write_script(path: &Path, body: &str) {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn runs_the_bundle_executable_for_a_bare_command_name() {
     // Given an app bundle whose CLI wrapper is on PATH under a bare name
     let dir = workdir("runs-bundle-executable-for-bare-name");
@@ -751,6 +762,7 @@ fn runs_the_bundle_executable_for_a_bare_command_name() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn runs_the_bundle_executable_for_a_quoted_command() {
     // Given the same bundle, named inside a single quoted operand
     let dir = workdir("runs-bundle-executable-for-quoted-command");
@@ -774,6 +786,7 @@ fn runs_the_bundle_executable_for_a_quoted_command() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn reports_an_app_bundle_it_cannot_read() {
     // Given a CLI wrapper inside a bundle with no readable Info.plist
     let dir = workdir("reports-an-app-bundle-it-cannot-read");
@@ -799,6 +812,7 @@ fn reports_an_app_bundle_it_cannot_read() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn leaves_a_compound_shell_command_to_the_shell() {
     // Given a quoted command whose first word is not the program
     let dir = workdir("leaves-a-compound-shell-command-to-the-shell");
@@ -1559,6 +1573,7 @@ fn stays_silent_when_the_same_setting_comes_from_the_config_file() {
 
 // --- Process information and the host's environments (issue #31) ------------
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     /// `sysctl(2)`. Declared here rather than taken as a dependency: two calls
     /// in one test file do not justify a crate, and the platform fixes the
@@ -1595,14 +1610,17 @@ unsafe extern "C" {
 /// `TIOCSCTTY` on Darwin: claim the slave as the controlling terminal. It is an
 /// `ioctl` on the `/dev/ttysNNN` slave, so the profile must grant `file-ioctl`
 /// on the slave for it — the step a terminal emulator fails at otherwise.
+#[cfg(target_os = "macos")]
 const TIOCSCTTY: u64 = 0x2000_7461;
 
 /// `CTL_KERN`, `KERN_PROCARGS2`: the sysctl answering a pid's arguments and
 /// environment. The pid is its third element, so it is reachable only as a
 /// numeric MIB and no name-based profile rule matches it.
+#[cfg(target_os = "macos")]
 const KERN_PROCARGS2_MIB: [i32; 2] = [1, 49];
 
 /// Room for the longest path `proc_pidpath` can return.
+#[cfg(target_os = "macos")]
 const PATH_BUFFER_BYTES: u32 = 4096;
 
 /// Makes the kernel calls the tests below put under the sandbox, and prints
@@ -1616,6 +1634,7 @@ const PATH_BUFFER_BYTES: u32 = 4096;
 /// itself; `#[ignore]` keeps it out of an ordinary run.
 #[test]
 #[ignore = "a fixture the process-information tests drive; not a test on its own"]
+#[cfg(target_os = "macos")]
 fn probe() {
     if let Ok(pid) = std::env::var("SANDME_PROBE_PID") {
         print_process_arguments(pid.parse().expect("the driver passes a pid"));
@@ -1636,6 +1655,7 @@ fn probe() {
 /// unless the profile grants `file-ioctl` on the slave (issue #29). It forks so
 /// the child is not already a process-group leader — the precondition `setsid`
 /// needs.
+#[cfg(target_os = "macos")]
 fn print_controlling_terminal() {
     use std::io::Write;
     let (mut master, mut slave) = (0_i32, 0_i32);
@@ -1677,6 +1697,7 @@ fn print_controlling_terminal() {
 ///
 /// Non-printing bytes become newlines so the caller can assert on a marker
 /// planted in the target's environment.
+#[cfg(target_os = "macos")]
 fn print_process_arguments(pid: i32) {
     let mib = [KERN_PROCARGS2_MIB[0], KERN_PROCARGS2_MIB[1], pid];
     let mut argmax = 0_usize;
@@ -1729,6 +1750,7 @@ fn print_process_arguments(pid: i32) {
 }
 
 /// Forks, then prints the child's executable path, or the kernel's refusal.
+#[cfg(target_os = "macos")]
 fn print_own_child_path() {
     let child = unsafe { libc_fork() };
     if child == 0 {
@@ -1745,6 +1767,7 @@ fn print_own_child_path() {
     }
 }
 
+#[cfg(target_os = "macos")]
 unsafe extern "C" {
     /// `fork(2)`, named apart from the caller so the `unsafe` block reads as
     /// the process split it is.
@@ -1757,6 +1780,7 @@ unsafe extern "C" {
 ///
 /// `variable` and `value` are the environment entry telling the probe what to
 /// ask the kernel for. Returns the probe's captured output.
+#[cfg(target_os = "macos")]
 fn probe_under_sandme(dir: &Path, variable: &str, value: &str) -> std::process::Output {
     let exe = std::env::current_exe().expect("the test binary knows its own path");
     let exe_dir = exe.parent().expect("the test binary is in a directory");
@@ -1766,6 +1790,7 @@ fn probe_under_sandme(dir: &Path, variable: &str, value: &str) -> std::process::
 
 /// Runs the probe under sandme with `shares` passed as `shared_paths`
 /// verbatim, so a caller can supply a value that is not a path.
+#[cfg(target_os = "macos")]
 fn probe_under_sandme_sharing(
     dir: &Path,
     shares: &str,
@@ -1788,6 +1813,7 @@ fn probe_under_sandme_sharing(
 
 /// Runs the probe with no sandbox between it and the kernel, so a test can
 /// establish that the read it expects to be refused works otherwise.
+#[cfg(target_os = "macos")]
 fn probe_unsandboxed(variable: &str, value: &str) -> std::process::Output {
     let exe = std::env::current_exe().expect("the test binary knows its own path");
     Command::new(exe)
@@ -1802,6 +1828,7 @@ fn probe_unsandboxed(variable: &str, value: &str) -> std::process::Output {
 /// Not a platform binary: macOS shields those from this read whatever the
 /// profile says, which would make the assertions below pass for the wrong
 /// reason.
+#[cfg(target_os = "macos")]
 fn secret_holder(dir: &Path, marker: &str) -> std::process::Child {
     Command::new(env!("CARGO_BIN_EXE_sandme"))
         .env("HOME", dir)
@@ -1813,6 +1840,7 @@ fn secret_holder(dir: &Path, marker: &str) -> std::process::Child {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn denies_reading_another_process_environment() {
     // Given a process outside the sandbox holding a secret, which the probe
     // can read when nothing sandboxes it
@@ -1846,6 +1874,7 @@ fn denies_reading_another_process_environment() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn denies_reading_another_process_environment_under_an_injected_grant() {
     // Given the same holder, and a shared path that closes the literal it is
     // interpolated into and appends the two grants this profile narrows —
@@ -1887,6 +1916,7 @@ fn denies_reading_another_process_environment_under_an_injected_grant() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn reads_its_own_child_process_information() {
     // Given a sandboxed command that forks
     let dir = workdir("reads-its-own-child-process-information");
@@ -1907,6 +1937,7 @@ fn reads_its_own_child_process_information() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn reads_a_sysctl_outside_the_denied_prefix() {
     // Given the CPU count, which every thread pool on the machine asks for
     let dir = workdir("reads-a-sysctl-outside-the-denied-prefix");
@@ -1928,6 +1959,7 @@ fn reads_a_sysctl_outside_the_denied_prefix() {
 }
 
 #[test]
+#[cfg(target_os = "macos")]
 fn refuses_to_run_when_tmpdir_would_inject_into_the_profile() {
     // Given GUI mode and a `$TMPDIR` crafted to close the subpath literal it is
     // written into and append `(allow default)` — the escape the profile's
