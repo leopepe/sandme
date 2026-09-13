@@ -47,6 +47,11 @@ mod backend {
     /// confine the filesystem while leaving the network open.
     const ABI_FLOOR: i32 = 4;
 
+    /// `LANDLOCK_CREATE_RULESET_VERSION` from `linux/landlock.h` — the flag that
+    /// turns `landlock_create_ruleset` into an ABI probe. The `libc` crate does
+    /// not export it; the value is a stable part of the kernel UABI.
+    const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1;
+
     /// The ABI whose rights sandme requires. Rights above it (e.g. v5's
     /// `IoctlDev`) are left `BestEffort`, so a 6.7–6.9 kernel is still fully
     /// enforceable and PTY ioctls need no dedicated grant (D3, D6).
@@ -129,8 +134,9 @@ mod backend {
         match (status.ruleset, status.no_new_privs) {
             (RulesetStatus::FullyEnforced, true) => Ok(()),
             (RulesetStatus::FullyEnforced, false)
-            | (RulesetStatus::PartiallyEnforced, _)
-            | (RulesetStatus::NotEnforced, _) => Err(io::Error::from_raw_os_error(libc::EPERM)),
+            | (RulesetStatus::PartiallyEnforced | RulesetStatus::NotEnforced, _) => {
+                Err(io::Error::from_raw_os_error(libc::EPERM))
+            }
         }
     }
 
@@ -163,7 +169,7 @@ mod backend {
                 libc::SYS_landlock_create_ruleset,
                 std::ptr::null::<libc::c_void>(),
                 0_usize,
-                libc::LANDLOCK_CREATE_RULESET_VERSION,
+                LANDLOCK_CREATE_RULESET_VERSION,
             )
         };
         i32::try_from(version).unwrap_or(-1)
