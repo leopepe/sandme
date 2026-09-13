@@ -3,7 +3,7 @@
 //! [`run`] owns everything that does not depend on the platform — resolving the
 //! operands to a program and arguments, wiring the proxy into the child's
 //! environment, forwarding Ctrl-C, and translating the exit status. How the
-//! restriction itself is built and applied is a [`Backend`]: [`seatbelt`] on
+//! restriction itself is built and applied is a [`Backend`]: `seatbelt` on
 //! macOS today, a Linux (Landlock) backend later (issue #8, SPEC-0015).
 
 use std::net::SocketAddr;
