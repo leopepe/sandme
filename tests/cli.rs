@@ -1486,6 +1486,12 @@ async fn echo_request_once(listener: tokio::net::TcpListener) {
 }
 
 #[test]
+// macOS-only: this asserts the Seatbelt carve-out `(deny file-write* ~/.sandme)`
+// under a broad `~` allow. Landlock is allow-only with no deny primitive, so it
+// cannot grant a shared home while denying `~/.sandme` within it; on Linux the
+// protection holds only by omission (a normal share does not include the real
+// $HOME), a limitation recorded in docs/specs/0016.
+#[cfg(target_os = "macos")]
 fn denies_rewriting_sandmes_own_config_even_when_the_whole_home_is_shared() {
     // Given the widest configuration sandme offers — the default share of the
     // whole home directory, plus GUI mode — and an existing config file

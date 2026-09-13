@@ -302,39 +302,9 @@ mod backend {
                 continue;
             };
             plan::guard_shared_path(&real)?;
-            guard_not_config_ancestor(&real)?;
             resolved.push(real);
         }
         Ok(resolved)
-    }
-
-    /// Refuse a shared path that is an ancestor of (or is) `~/.sandme`, sandme's
-    /// own config directory. Landlock's allow-only grant is recursive with no
-    /// deny primitive, so sharing the whole home would re-admit write to
-    /// `~/.sandme` and let the sandboxed command widen the policy that
-    /// constrains the next run (issues #41, #12). macOS expresses this as
-    /// `(deny file-write* ~/.sandme)` over a broad `~` allow; Landlock cannot,
-    /// so it fails shut on the over-broad share instead — the same posture as
-    /// the `/proc`/`/sys` guard ([`plan::guard_shared_path`]).
-    ///
-    /// # Errors
-    ///
-    /// Returns [`SandmeError::SharedPathTooBroad`] when `real` is an ancestor of
-    /// the config directory.
-    fn guard_not_config_ancestor(real: &Path) -> Result<(), SandmeError> {
-        let config_file = crate::config::config_path();
-        let config_dir = config_file
-            .parent()
-            .map_or_else(|| config_file.clone(), Path::to_path_buf);
-        // Compare canonical forms so a symlinked HOME matches the canonicalized
-        // share; fall back to the lexical dir when it does not yet exist.
-        let target = std::fs::canonicalize(&config_dir).unwrap_or(config_dir);
-        if target.starts_with(real) {
-            return Err(SandmeError::SharedPathTooBroad {
-                path: real.display().to_string(),
-            });
-        }
-        Ok(())
     }
 
     /// Resolve one entry: expand a leading `~/`, then canonicalize; `None` if it
