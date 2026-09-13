@@ -133,6 +133,8 @@ fn failure_code(error: &SandmeError) -> ExitCode {
         | SandmeError::TunnelProxyUnset
         | SandmeError::TunnelUnreachable { .. }
         | SandmeError::TunnelRefused { .. }
+        | SandmeError::SandboxNotEnforced { .. }
+        | SandmeError::SharedPathTooBroad { .. }
         | SandmeError::UnsafeProfilePath { .. } => ExitCode::from(SANDME_FAILURE),
     }
 }

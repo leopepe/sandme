@@ -21,5 +21,14 @@ serde = { version = "1", features = ["derive"] }
 toml = "0.9"
 thiserror = "2"
 
+# The Landlock backend is Linux-only, so its dependencies are target-scoped:
+# nothing here compiles on macOS. `landlock` builds and applies the ruleset;
+# `libc` supplies the `EPERM`/`pre_exec` glue and the ABI-probe syscall.
+[target.'cfg(target_os = "linux")'.dependencies]
+# Only the core Ruleset/PathFd/NetPort/BitFlags API is used, so no default
+# features are needed (D9 — minimal features). `libc` keeps std (needs it).
+landlock = { version = "0.4", default-features = false }
+libc = "0.2"
+
 [dev-dependencies]
 serial_test = "3"
