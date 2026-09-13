@@ -83,8 +83,12 @@ mod backend {
                 return Err(failure);
             }
 
-            let shared = resolve_shared(&config.shared_paths)?;
-            let access = plan::build_plan(config, &shared, proxy, &plan_env());
+            // Read the environment once into the injected `PlanEnv`, then reuse
+            // its `home` for the `~/` expansion of `shared_paths` — no separate
+            // `$HOME` read for tilde expansion (the last direct one is gone).
+            let env = plan_env();
+            let shared = resolve_shared(&config.shared_paths, env.home.as_deref())?;
+            let access = plan::build_plan(config, &shared, proxy, &env);
             let ruleset = create_ruleset(&access)?;
 
             // The ruleset — and every PathFd inside it — is built here in the
@@ -294,11 +298,11 @@ mod backend {
     /// `/proc`/`/sys`-ancestor share), and again on the canonicalized path, so a
     /// symlink cannot resolve an innocuous-looking entry onto a protected tree
     /// (F1/D5). Either rejection fails the whole invocation shut.
-    fn resolve_shared(paths: &[String]) -> Result<Vec<PathBuf>, SandmeError> {
+    fn resolve_shared(paths: &[String], home: Option<&Path>) -> Result<Vec<PathBuf>, SandmeError> {
         let mut resolved = Vec::with_capacity(paths.len());
         for path in paths {
             plan::guard_shared_path(Path::new(path))?;
-            let Some(real) = resolve_one(path) else {
+            let Some(real) = resolve_one(path, home) else {
                 continue;
             };
             plan::guard_shared_path(&real)?;
@@ -307,19 +311,23 @@ mod backend {
         Ok(resolved)
     }
 
-    /// Resolve one entry: expand a leading `~/`, then canonicalize; `None` if it
-    /// does not resolve.
-    fn resolve_one(path: &str) -> Option<PathBuf> {
-        std::fs::canonicalize(expand_tilde(path)).ok()
+    /// Resolve one entry: expand a leading `~/` against the injected `home`,
+    /// then canonicalize; `None` if it does not resolve.
+    fn resolve_one(path: &str, home: Option<&Path>) -> Option<PathBuf> {
+        std::fs::canonicalize(expand_tilde(path, home)).ok()
     }
 
-    /// Expand a leading `~/` against the real `$HOME`, leaving anything else
-    /// unchanged.
-    fn expand_tilde(path: &str) -> PathBuf {
+    /// Expand a leading `~/` against the injected `home` — taken from the same
+    /// [`PlanEnv`] the adapter already reads for its access plan — leaving
+    /// anything else unchanged. Reads no process environment of its own.
+    fn expand_tilde(path: &str, home: Option<&Path>) -> PathBuf {
+        // `home` carries `plan_env()`'s `var_os` (OsString) semantics, inherited
+        // from `PlanEnv`: intentional, so a non-UTF-8 `$HOME` expands the tilde
+        // rather than dropping it (widening toward the user's configured share).
         if let Some(rest) = path.strip_prefix("~/")
-            && let Ok(home) = std::env::var("HOME")
+            && let Some(home) = home
         {
-            return PathBuf::from(home).join(rest);
+            return home.join(rest);
         }
         PathBuf::from(path)
     }
