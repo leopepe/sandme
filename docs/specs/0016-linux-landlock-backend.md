@@ -53,6 +53,15 @@ drop-in port of Seatbelt:
 - **Allow-only union, no deny.** A ruleset is a set of *allowed* accesses; anything not added is
   denied. Every Seatbelt "allow broad, deny a subtree" rule must invert into "grant only the wanted
   subtrees." This is the source of the `/proc` and no-root-grant decisions.
+  - **`~/.sandme` within a shared home.** macOS keeps `(deny file-write* ~/.sandme)` even under a
+    broad `~` allow, so a sandboxed command cannot rewrite the policy that governs the next run
+    (issues #41, #12). Landlock has no such deny: if a `shared_paths` entry contains `~/.sandme`
+    (i.e. the user shares their real `$HOME` or an ancestor of it), that config becomes writable.
+    In normal use a share names a project directory, not `$HOME`, so `~/.sandme` is protected by
+    omission; the guarantee is lost only under an explicit home-or-wider share. The integration
+    test that asserts the carve-out is therefore macOS-only. Closing this on Linux needs the
+    enumerate-and-omit approach (grant a shared dir's entries except `.sandme`), deferred with the
+    other deny-inversion follow-ups.
 - **Applied to the process, not via a wrapper.** There is no `sandbox-exec`. The child restricts
   *itself* with `restrict_self()` after `fork` and before `exec`; the ruleset (with its open path
   descriptors) is built in the parent.

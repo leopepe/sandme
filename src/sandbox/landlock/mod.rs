@@ -2,7 +2,7 @@
 //!
 //! Landlock is an allow-only union of path and TCP-port rules with no deny
 //! primitive, applied to the process after `fork` and before `exec` — there is
-//! no `sandbox-exec` wrapper (unlike [`crate::sandbox::seatbelt`]). The policy
+//! no `sandbox-exec` wrapper (unlike the macOS `seatbelt` backend). The policy
 //! decision (which paths, rights and ports) lives in the `cfg`-neutral [`plan`]
 //! module, so it compiles and unit-tests on macOS. Everything that needs a
 //! Linux kernel — the `landlock` crate calls, the `pre_exec` glue, the ABI
@@ -46,6 +46,11 @@ mod backend {
     /// (D3). Below v4, sandme cannot confine egress and so fails shut rather than
     /// confine the filesystem while leaving the network open.
     const ABI_FLOOR: i32 = 4;
+
+    /// `LANDLOCK_CREATE_RULESET_VERSION` from `linux/landlock.h` — the flag that
+    /// turns `landlock_create_ruleset` into an ABI probe. The `libc` crate does
+    /// not export it; the value is a stable part of the kernel UABI.
+    const LANDLOCK_CREATE_RULESET_VERSION: u32 = 1;
 
     /// The ABI whose rights sandme requires. Rights above it (e.g. v5's
     /// `IoctlDev`) are left `BestEffort`, so a 6.7–6.9 kernel is still fully
@@ -129,8 +134,9 @@ mod backend {
         match (status.ruleset, status.no_new_privs) {
             (RulesetStatus::FullyEnforced, true) => Ok(()),
             (RulesetStatus::FullyEnforced, false)
-            | (RulesetStatus::PartiallyEnforced, _)
-            | (RulesetStatus::NotEnforced, _) => Err(io::Error::from_raw_os_error(libc::EPERM)),
+            | (RulesetStatus::PartiallyEnforced | RulesetStatus::NotEnforced, _) => {
+                Err(io::Error::from_raw_os_error(libc::EPERM))
+            }
         }
     }
 
@@ -163,7 +169,7 @@ mod backend {
                 libc::SYS_landlock_create_ruleset,
                 std::ptr::null::<libc::c_void>(),
                 0_usize,
-                libc::LANDLOCK_CREATE_RULESET_VERSION,
+                LANDLOCK_CREATE_RULESET_VERSION,
             )
         };
         i32::try_from(version).unwrap_or(-1)
@@ -187,12 +193,30 @@ mod backend {
             &access.read_execs,
             AccessFs::from_read(REQUIRED_ABI),
         )?;
+        let created = add_own_executable(created)?;
         let created = add_paths(
             created,
             &access.read_writes,
             AccessFs::from_all(REQUIRED_ABI),
         )?;
         add_ports(created, &access.connect_ports)
+    }
+
+    /// Grant read+execute on sandme's own binary. The git-over-SSH tunnel
+    /// (issue #33) re-execs sandme as ssh's `ProxyCommand`, so the confined
+    /// child must be able to execute sandme itself — and the binary lives
+    /// outside the enumerated system directories. If sandme cannot locate its
+    /// own path the grant is skipped; the tunnel simply will not start, which is
+    /// the same outcome the `wire_git_ssh` fallback already produces.
+    fn add_own_executable(created: RulesetCreated) -> Result<RulesetCreated, SandmeError> {
+        match std::env::current_exe() {
+            Ok(exe) => add_paths(
+                created,
+                std::slice::from_ref(&exe),
+                AccessFs::from_read(REQUIRED_ABI),
+            ),
+            Err(_) => Ok(created),
+        }
     }
 
     /// The empty ruleset that handles both the filesystem and the egress rights,
@@ -215,10 +239,24 @@ mod backend {
         paths: &[PathBuf],
         access: BitFlags<AccessFs>,
     ) -> Result<RulesetCreated, SandmeError> {
+        let file_access = AccessFs::from_file(REQUIRED_ABI);
         for path in paths {
             let Ok(fd) = PathFd::new(path) else { continue };
+            // Directory-only rights (ReadDir, MakeDir, …) are illegal on a
+            // regular file or device node; under HardRequirement the crate
+            // rejects such a rule outright. Narrow the grant to the
+            // file-legitimate rights for any non-directory path (e.g.
+            // /bin/bash, /dev/null, /dev/ptmx).
+            let effective = if path.is_dir() {
+                access
+            } else {
+                access & file_access
+            };
+            if effective.is_empty() {
+                continue;
+            }
             created = created
-                .add_rule(PathBeneath::new(fd, access))
+                .add_rule(PathBeneath::new(fd, effective))
                 .map_err(rule_error)?;
         }
         Ok(created)

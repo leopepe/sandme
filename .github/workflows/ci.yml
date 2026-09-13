@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# One in-flight run per ref; a new push cancels the previous run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  fmt:
+    name: fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --check
+
+  doc:
+    name: doc
+    runs-on: ubuntu-24.04
+    env:
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo doc --no-deps --locked
+
+  test:
+    name: test (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-14, target: aarch64-apple-darwin }
+          - { os: macos-13, target: x86_64-apple-darwin }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-gnu }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      # clippy's lint levels live in Cargo.toml (`clippy::all = deny`), so a
+      # denied lint fails the step; `pedantic = warn` stays a warning by design.
+      - run: cargo clippy --all-targets --target ${{ matrix.target }} --locked
+      - run: cargo build --target ${{ matrix.target }} --locked --verbose
+      # On Linux this exercises the Landlock backend, which needs a kernel with
+      # Landlock enabled (>=5.13 filesystem, >=6.7 network). GitHub's ubuntu
+      # runners provide it; if a future runner does not, the fail-shut backend
+      # will refuse and the enforcement tests will surface it here.
+      - run: cargo test --target ${{ matrix.target }} --locked --verbose
