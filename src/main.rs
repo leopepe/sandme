@@ -86,17 +86,22 @@ async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
     }
     let config = loaded.config;
 
-    // The proxy comes up first: a sandbox without its proxy is a broken
-    // sandbox, so the invocation fails instead (FR-005).
+    // The proxy comes up first when it is enabled: a proxied sandbox without its
+    // proxy is a broken sandbox, so the invocation fails instead (FR-005).
     // `serve` takes the whole config now: the port, and the credential the
-    // child must present (SPEC-0003/FR-302).
-    let server = proxy::serve(&config)?;
+    // child must present (SPEC-0003/FR-302). When `proxy = false` no proxy is
+    // started, and the command runs with no network egress at all (design D1).
+    let server = if config.proxy {
+        Some(proxy::serve(&config)?)
+    } else {
+        None
+    };
 
     // `sandbox::run` owns the platform backend: it builds the restriction from
     // the config and applies it (SPEC-0015). It takes the whole config — each
-    // backend translates it its own way — and the server, whose URL carries the
-    // credential the child must present (SPEC-0003/FR-203).
-    sandbox::run(&config, &server, command).await
+    // backend translates it its own way — and the optional server, whose URL
+    // carries the credential the child must present (SPEC-0003/FR-203).
+    sandbox::run(&config, server.as_ref(), command).await
     // `server` is dropped here: the proxy's lifetime follows the command's (T-007).
 }
 

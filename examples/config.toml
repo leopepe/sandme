@@ -15,15 +15,42 @@
 # directory, which is convenient and also the least confining setting there is —
 # it includes ~/.ssh, ~/.aws and every dotfile credential you own.
 #
-# There is no read-only share yet, so a toolchain you add here is writable by
-# the sandboxed process: https://github.com/leopepe/sandme/issues/10
+# A path here is writable by the sandboxed process. For a toolchain you want
+# readable-but-not-writable (so its binaries run but the process cannot modify
+# it), use read_only_paths below instead.
 # ---------------------------------------------------------------------------
 shared_paths = [
   "~/Workspace",      # your projects — narrow this to a single repo if you can
+]
+
+# ---------------------------------------------------------------------------
+# read_only_paths  (env: SANDME_READ_ONLY_PATHS, comma-separated)
+#
+# Paths the sandboxed command may READ AND EXECUTE, but NOT write. Use it for a
+# toolchain prefix whose binaries must run while the process cannot modify it.
+# "~/" expands and symlinks are resolved, exactly as for shared_paths, and the
+# same guard applies: a "/" or "/proc"/"/sys" entry is refused.
+#
+# Default: empty — no toolchain directory is granted unless you name it here.
+# ---------------------------------------------------------------------------
+read_only_paths = [
   "/opt/homebrew",    # Homebrew on Apple silicon; brew binaries cannot load
                       # their dylibs without it. Intel Macs use /usr/local,
                       # which is already readable. Add "/nix" if you use Nix.
 ]
+
+# ---------------------------------------------------------------------------
+# proxy  (env: SANDME_PROXY=0 to disable)
+#
+# Whether to start the egress proxy and route the command through it. On by
+# default. Set to false to run with NO network egress at all: no proxy is
+# started, no HTTP(S)_PROXY is set, and no git-over-SSH tunnel is wired — so
+# both HTTP(S) and git-over-SSH remotes fail. That is the point; an SSH git
+# failure under proxy = false is expected, not a bug.
+#
+# Default: true
+# ---------------------------------------------------------------------------
+proxy = true
 
 # ---------------------------------------------------------------------------
 # proxy_port  (env: SANDME_PROXY_PORT)
@@ -32,12 +59,13 @@ shared_paths = [
 # the sandbox allows, and HTTP_PROXY/HTTPS_PROXY in the command's environment
 # point at it.
 #
-# Use 0 to take a free port from the OS — necessary if you run several sandme
-# invocations at the same time, since a fixed port collides.
+# 0 (the default) takes a free ephemeral port from the OS, so several sandme
+# invocations run in parallel without colliding on a fixed port. Set a non-zero
+# value only to pin a fixed, predictable port for one run.
 #
-# Default: 8787
+# Default: 0
 # ---------------------------------------------------------------------------
-proxy_port = 8787
+proxy_port = 0
 
 # ---------------------------------------------------------------------------
 # gui_mode  (env: SANDME_GUI_MODE=1)

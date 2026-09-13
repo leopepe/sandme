@@ -130,7 +130,8 @@ pub struct AccessPlan {
     pub read_execs: Vec<PathBuf>,
     /// Paths granted read and write.
     pub read_writes: Vec<PathBuf>,
-    /// TCP ports the child may `connect()` to — the proxy port alone (D4).
+    /// TCP ports the child may `connect()` to — the proxy port alone when the
+    /// proxy is on (D4), or empty when it is off (deny-all-TCP, D3).
     pub connect_ports: Vec<u16>,
 }
 
@@ -139,15 +140,19 @@ pub struct AccessPlan {
 ///
 /// `config` supplies `gui_mode`; `shared` is the already-`~`-expanded,
 /// symlink-resolved absolute form of `config.shared_paths` (the adapter in
-/// [`super`] does that live-FS work, which this module refuses); `proxy` is the
-/// egress proxy address, whose port is the only outbound TCP grant; `env` is
-/// the injected `HOME`/`XDG_*` environment. No filesystem or environment access
-/// happens here.
+/// [`super`] does that live-FS work, which this module refuses); `read_only` is
+/// the same already-resolved, guarded form of `config.read_only_paths`, granted
+/// read+execute without write (design D5); `proxy` is the egress proxy address
+/// when one is running — whose port is the only outbound TCP grant — or `None`
+/// when the proxy is disabled, yielding an empty allowed-port set that is a
+/// fully-enforced deny-all-TCP state (design D3). `env` is the injected
+/// `HOME`/`XDG_*` environment. No filesystem or environment access happens here.
 #[must_use]
 pub fn build_plan(
     config: &Config,
     shared: &[PathBuf],
-    proxy: SocketAddr,
+    read_only: &[PathBuf],
+    proxy: Option<SocketAddr>,
     env: &PlanEnv,
 ) -> AccessPlan {
     let reads = READ_DIRS.iter().map(PathBuf::from).collect();
@@ -158,6 +163,11 @@ pub fn build_plan(
     // net: the single-operand path MUST be executable even if the enumerated
     // read+exec dirs are ever narrowed, so the shell is never left unreachable.
     read_execs.push(PathBuf::from(crate::sandbox::SHELL));
+    // Read-only paths join the read+execute bucket (one bucket, read+exec —
+    // design D5): a toolchain prefix must be executable, and execute on a
+    // pure-data directory is harmless. They are already resolved and guarded by
+    // the adapter through the same path as `shared`.
+    read_execs.extend(read_only.iter().cloned());
 
     let mut read_writes: Vec<PathBuf> = DEVICE_READ_WRITE.iter().map(PathBuf::from).collect();
     read_writes.extend(shared.iter().cloned());
@@ -169,7 +179,10 @@ pub fn build_plan(
         reads,
         read_execs,
         read_writes,
-        connect_ports: vec![proxy.port()],
+        // Empty when the proxy is off: the base ruleset still handles
+        // ConnectTcp, so an empty port list is deny-all outbound TCP, fully
+        // enforced at the ABI-v4 floor (design D3). Never a sentinel port.
+        connect_ports: proxy.map(|p| vec![p.port()]).unwrap_or_default(),
     }
 }
 
@@ -218,6 +231,8 @@ mod tests {
     fn config_with(gui_mode: bool) -> Config {
         Config {
             shared_paths: Vec::new(),
+            read_only_paths: Vec::new(),
+            proxy: true,
             proxy_port: 8787,
             gui_mode,
             allow_private_egress: false,
@@ -235,7 +250,13 @@ mod tests {
 
     #[test]
     fn grants_the_enumerated_system_directories_read_and_execute() {
-        let plan = build_plan(&config_with(false), &[], proxy(8787), &PlanEnv::default());
+        let plan = build_plan(
+            &config_with(false),
+            &[],
+            &[],
+            Some(proxy(8787)),
+            &PlanEnv::default(),
+        );
 
         for dir in ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt"] {
             assert!(
@@ -247,7 +268,13 @@ mod tests {
 
     #[test]
     fn grants_execute_on_the_shell() {
-        let plan = build_plan(&config_with(false), &[], proxy(8787), &PlanEnv::default());
+        let plan = build_plan(
+            &config_with(false),
+            &[],
+            &[],
+            Some(proxy(8787)),
+            &PlanEnv::default(),
+        );
 
         assert!(
             plan.read_execs.contains(&PathBuf::from("/bin/bash")),
@@ -264,7 +291,8 @@ mod tests {
         let plan = build_plan(
             &config_with(false),
             &shared,
-            proxy(8787),
+            &[],
+            Some(proxy(8787)),
             &PlanEnv::default(),
         );
 
@@ -278,7 +306,13 @@ mod tests {
 
     #[test]
     fn grants_the_pseudo_terminal_devices_read_write() {
-        let plan = build_plan(&config_with(false), &[], proxy(8787), &PlanEnv::default());
+        let plan = build_plan(
+            &config_with(false),
+            &[],
+            &[],
+            Some(proxy(8787)),
+            &PlanEnv::default(),
+        );
 
         assert!(plan.read_writes.contains(&PathBuf::from("/dev/ptmx")));
         assert!(plan.read_writes.contains(&PathBuf::from("/dev/pts")));
@@ -286,7 +320,13 @@ mod tests {
 
     #[test]
     fn grants_outbound_tcp_only_to_the_proxy_port() {
-        let plan = build_plan(&config_with(false), &[], proxy(9191), &PlanEnv::default());
+        let plan = build_plan(
+            &config_with(false),
+            &[],
+            &[],
+            Some(proxy(9191)),
+            &PlanEnv::default(),
+        );
 
         assert_eq!(plan.connect_ports, vec![9191]);
     }
@@ -295,7 +335,13 @@ mod tests {
     fn never_grants_the_root_directory_as_a_whole() {
         // The widest configuration the builder can produce.
         let shared = [PathBuf::from("/synthetic/project")];
-        let plan = build_plan(&config_with(true), &shared, proxy(8787), &env_with_home());
+        let plan = build_plan(
+            &config_with(true),
+            &shared,
+            &[],
+            Some(proxy(8787)),
+            &env_with_home(),
+        );
 
         for path in plan
             .reads
@@ -316,7 +362,13 @@ mod tests {
         // because `build_plan` filters `/proc` itself. Here the share is benign,
         // so no rule may mention /proc.
         let shared = [PathBuf::from("/synthetic/project")];
-        let plan = build_plan(&config_with(true), &shared, proxy(8787), &env_with_home());
+        let plan = build_plan(
+            &config_with(true),
+            &shared,
+            &[],
+            Some(proxy(8787)),
+            &env_with_home(),
+        );
 
         for path in plan
             .reads
@@ -333,7 +385,13 @@ mod tests {
 
     #[test]
     fn withholds_the_xdg_directories_when_gui_mode_is_off() {
-        let plan = build_plan(&config_with(false), &[], proxy(8787), &env_with_home());
+        let plan = build_plan(
+            &config_with(false),
+            &[],
+            &[],
+            Some(proxy(8787)),
+            &env_with_home(),
+        );
 
         for suffix in [".config", ".cache", ".local/share"] {
             let dir = PathBuf::from("/synthetic/home").join(suffix);
@@ -346,7 +404,13 @@ mod tests {
 
     #[test]
     fn grants_the_xdg_fallback_directories_under_gui_mode() {
-        let plan = build_plan(&config_with(true), &[], proxy(8787), &env_with_home());
+        let plan = build_plan(
+            &config_with(true),
+            &[],
+            &[],
+            Some(proxy(8787)),
+            &env_with_home(),
+        );
 
         for suffix in [".config", ".cache", ".local/share"] {
             let dir = PathBuf::from("/synthetic/home").join(suffix);
@@ -372,7 +436,7 @@ mod tests {
             data_home: Some(PathBuf::from("/xdg/data")),
             runtime_dir: Some(PathBuf::from("/run/user/1000")),
         };
-        let plan = build_plan(&config_with(true), &[], proxy(8787), &env);
+        let plan = build_plan(&config_with(true), &[], &[], Some(proxy(8787)), &env);
 
         for dir in ["/xdg/config", "/xdg/cache", "/xdg/data", "/run/user/1000"] {
             assert!(
@@ -416,5 +480,46 @@ mod tests {
                 "{entry} is below no protected tree and must be accepted"
             );
         }
+    }
+
+    #[test]
+    fn grants_no_outbound_tcp_when_the_proxy_is_off() {
+        // Given the proxy is off (None), the allowed-port set is empty — a
+        // deny-all outbound TCP state under the base ConnectTcp handling (D3)
+        let plan = build_plan(&config_with(false), &[], &[], None, &PlanEnv::default());
+
+        assert!(
+            plan.connect_ports.is_empty(),
+            "no proxy means no allowed port: {:?}",
+            plan.connect_ports
+        );
+    }
+
+    #[test]
+    fn grants_read_only_paths_read_execute_never_read_write() {
+        // A synthetic already-resolved read-only path lands in read_execs
+        // (read+execute, one bucket — D5) and never in read_writes.
+        let read_only = [PathBuf::from("/synthetic/toolchain")];
+        let plan = build_plan(
+            &config_with(false),
+            &[],
+            &read_only,
+            Some(proxy(8787)),
+            &PlanEnv::default(),
+        );
+
+        assert!(
+            plan.read_execs
+                .contains(&PathBuf::from("/synthetic/toolchain")),
+            "a read-only path must be read+execute: {:?}",
+            plan.read_execs
+        );
+        assert!(
+            !plan
+                .read_writes
+                .contains(&PathBuf::from("/synthetic/toolchain")),
+            "a read-only path must never be granted write: {:?}",
+            plan.read_writes
+        );
     }
 }

@@ -2096,3 +2096,113 @@ async fn echo_line_once(listener: tokio::net::TcpListener) {
     let _ = stream.write_all(b"tunnelled-pong\n").await;
     let _ = stream.shutdown().await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[cfg(target_os = "macos")]
+async fn proxy_disabled_wires_no_proxy_and_denies_egress() {
+    // Given a live origin on loopback that would answer if it were reachable —
+    // so a failed fetch means the sandbox blocked egress, not a dead target
+    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+        .await
+        .unwrap();
+    let origin_port = origin.local_addr().unwrap().port();
+    tokio::spawn(serve_once(origin));
+
+    let dir = workdir("proxy-disabled-no-egress");
+
+    // With SANDME_PROXY=0, the child's environment carries no HTTP(S)_PROXY:
+    // no proxy was started, so nothing was wired (SPEC-0017/FR-1701). This holds
+    // even when sandme's own environment exports a proxy — the off path clears
+    // all four spellings on the child, so the guarantee is not env-dependent
+    // (F4). We set them here precisely to prove that.
+    let mut env_cmd = sandme(&dir);
+    env_cmd
+        .env("SANDME_PROXY", "0")
+        .env("HTTP_PROXY", "http://inherited.example:9999")
+        .env("HTTPS_PROXY", "http://inherited.example:9999")
+        .env("http_proxy", "http://inherited.example:9999")
+        .env("https_proxy", "http://inherited.example:9999")
+        .args([
+            "sh",
+            "-c",
+            "printf 'p=[%s][%s]' \"$HTTP_PROXY\" \"$HTTPS_PROXY\"",
+        ]);
+    let env_out = env_cmd.output().unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&env_out.stdout),
+        "p=[][]",
+        "no HTTP(S)_PROXY may reach the child with the proxy off, even one sandme inherited"
+    );
+
+    // And the sandbox grants no egress at all: a fetch to the live origin fails
+    // rather than succeeding, because with the proxy off the profile emits no
+    // network-outbound egress line.
+    let mut net_cmd = sandme(&dir);
+    net_cmd.env("SANDME_PROXY", "0").args([
+        "curl",
+        "-sS",
+        "--max-time",
+        "5",
+        &format!("http://127.0.0.1:{origin_port}/"),
+    ]);
+    let net_out = net_cmd.output().unwrap();
+    assert!(
+        !net_out.status.success(),
+        "egress must be denied with the proxy off"
+    );
+    assert!(
+        !String::from_utf8_lossy(&net_out.stdout).contains("served-through-proxy"),
+        "the request must not have reached the origin"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn read_only_path_is_readable_but_not_writable() {
+    // Given a directory OUTSIDE shared_paths, holding a file, granted read-only
+    let dir = workdir("read-only-path-cwd");
+    let ro = scratch_path("read-only-grant");
+    let _ = std::fs::remove_dir_all(&ro);
+    std::fs::create_dir_all(&ro).unwrap();
+    let readable = ro.join("toolchain-file");
+    std::fs::write(&readable, b"tool-contents").unwrap();
+
+    // A read within the read-only path is allowed (SPEC-0017/FR-1703). Without
+    // the grant this file — under $TMPDIR, outside the default cwd share — is
+    // not readable, so a success proves the grant is load-bearing.
+    let mut read_cmd = sandme(&dir);
+    read_cmd
+        .env("SANDME_READ_ONLY_PATHS", ro.display().to_string())
+        .args(["cat", &readable.display().to_string()]);
+    let read_out = read_cmd.output().unwrap();
+    assert!(
+        read_out.status.success(),
+        "a read-only path must be readable: {}",
+        String::from_utf8_lossy(&read_out.stderr)
+    );
+    assert_eq!(
+        String::from_utf8_lossy(&read_out.stdout).trim_end(),
+        "tool-contents"
+    );
+
+    // A write within the same read-only path is denied: the grant is read-only.
+    let target = ro.join("should-not-appear");
+    let mut write_cmd = sandme(&dir);
+    write_cmd
+        .env("SANDME_READ_ONLY_PATHS", ro.display().to_string())
+        .args(["touch", &target.display().to_string()]);
+    let write_status = write_cmd.status().unwrap();
+    assert!(
+        !write_status.success(),
+        "a read-only path must not be writable"
+    );
+    assert!(
+        !target.exists(),
+        "the denied write must not have created the file"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&ro);
+}

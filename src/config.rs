@@ -23,6 +23,29 @@ pub struct Config {
     #[serde(default = "default_shared_paths")]
     pub shared_paths: Vec<String>,
 
+    /// Filesystem paths the sandboxed command may read and execute, but not
+    /// write.
+    ///
+    /// Widens reads without widening writes: a toolchain prefix (a Homebrew
+    /// directory, a language runtime) can be named here so its binaries run and
+    /// its files read, while writes stay confined to `shared_paths`. `~/`
+    /// expands to the home directory and symlinks are resolved, exactly as for
+    /// `shared_paths`. Defaults to empty — no toolchain directory is baked into
+    /// the base set (SPEC-0002 minimal-grant thesis).
+    #[serde(default)]
+    pub read_only_paths: Vec<String>,
+
+    /// Whether to start the egress proxy and route the command through it.
+    ///
+    /// When `true` (the default), sandme starts the egress proxy, wires
+    /// `HTTP(S)_PROXY` into the child, and grants the command egress to the
+    /// proxy alone. When `false`, no proxy is started, no proxy environment is
+    /// set, and the sandbox grants the command no network egress at all — a
+    /// strictly more restrictive result. This narrows access, so it is not a
+    /// widening setting and raises no provenance warning.
+    #[serde(default = "default_proxy")]
+    pub proxy: bool,
+
     /// Port for the HTTP proxy server.
     #[serde(default = "default_proxy_port")]
     pub proxy_port: u16,
@@ -52,6 +75,8 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             shared_paths: default_shared_paths(),
+            read_only_paths: Vec::new(),
+            proxy: default_proxy(),
             proxy_port: default_proxy_port(),
             gui_mode: default_gui_mode(),
             allow_private_egress: default_allow_private_egress(),
@@ -82,8 +107,17 @@ fn default_shared_paths() -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The default proxy port is `0`: the OS chooses a free ephemeral port at bind
+/// time (SPEC-0014/FR-1404), so concurrent `sandme` runs never collide on a
+/// fixed port. The bound port is read back from the listener and pinned into
+/// the sandbox grant, so the command still reaches the proxy. A caller who
+/// needs a fixed, predictable port sets `proxy_port` explicitly.
 fn default_proxy_port() -> u16 {
-    8787
+    0
+}
+
+fn default_proxy() -> bool {
+    true
 }
 
 fn default_gui_mode() -> bool {
@@ -159,11 +193,12 @@ fn load_from(home: Option<&Path>) -> Result<Loaded, SandmeError> {
     }
 
     // The shares before the environment is applied are the baseline a broadened
-    // `SANDME_SHARED_PATHS` is judged against (FR-1003).
+    // `SANDME_SHARED_PATHS`/`SANDME_READ_ONLY_PATHS` is judged against (FR-1003).
     let baseline_shared = config.shared_paths.clone();
+    let baseline_read_only = config.read_only_paths.clone();
     let env = apply_env(&mut config);
 
-    let warnings = widening_warnings(&config, file, env, &baseline_shared);
+    let warnings = widening_warnings(&config, file, env, &baseline_shared, &baseline_read_only);
     Ok(Loaded { config, warnings })
 }
 
@@ -176,11 +211,16 @@ fn apply_env(config: &mut Config) -> EnvKeys {
 
     if let Ok(paths) = env::var("SANDME_SHARED_PATHS") {
         env.shared_paths = true;
-        config.shared_paths = paths
-            .split(',')
-            .map(|s| s.trim().to_string())
-            .filter(|s| !s.is_empty())
-            .collect();
+        config.shared_paths = split_list(&paths);
+    }
+
+    if let Ok(paths) = env::var("SANDME_READ_ONLY_PATHS") {
+        env.read_only_paths = true;
+        config.read_only_paths = split_list(&paths);
+    }
+
+    if let Ok(proxy) = env::var("SANDME_PROXY") {
+        config.proxy = env_bool(&proxy);
     }
 
     if let Ok(port) = env::var("SANDME_PROXY_PORT")
@@ -191,21 +231,52 @@ fn apply_env(config: &mut Config) -> EnvKeys {
 
     if let Ok(gui) = env::var("SANDME_GUI_MODE") {
         env.gui_mode = true;
-        config.gui_mode = gui == "1" || gui.to_lowercase() == "true";
+        config.gui_mode = env_bool(&gui);
     }
 
     if let Ok(allow) = env::var("SANDME_ALLOW_PRIVATE_EGRESS") {
         env.allow_private_egress = true;
-        config.allow_private_egress = allow == "1" || allow.to_lowercase() == "true";
+        config.allow_private_egress = env_bool(&allow);
     }
 
     env
 }
 
+/// Split a comma-separated environment list into trimmed, non-empty entries.
+///
+/// Shared by `SANDME_SHARED_PATHS` and `SANDME_READ_ONLY_PATHS`, which both take
+/// a comma-separated path list: each entry is trimmed and blank entries (a
+/// trailing comma, `a,,b`) are dropped, so the two parse identically.
+fn split_list(raw: &str) -> Vec<String> {
+    raw.split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
+}
+
+/// The house boolean convention for a `SANDME_*` flag: `1` or `true`
+/// (case-insensitive) is on, anything else is off.
+///
+/// Shared by `SANDME_PROXY`, `SANDME_GUI_MODE` and `SANDME_ALLOW_PRIVATE_EGRESS`
+/// so the three read the same spellings.
+fn env_bool(s: &str) -> bool {
+    s == "1" || s.to_lowercase() == "true"
+}
+
 /// Which widening settings a config file set, as opposed to leaving defaulted.
+///
+/// One `bool` per widening key: this is a flag set, not a struct that happens to
+/// hold booleans, so `clippy::struct_excessive_bools` (which suggests grouping
+/// unrelated flags into an enum/state type) does not apply — the fields ARE the
+/// per-key provenance bits, and grouping them would obscure the one-to-one map.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "FR-1705: one provenance bit per widening key"
+)]
 #[derive(Debug, Default, Clone, Copy)]
 struct FileKeys {
     shared_paths: bool,
+    read_only_paths: bool,
     gui_mode: bool,
     allow_private_egress: bool,
 }
@@ -215,6 +286,7 @@ impl FileKeys {
     fn from_table(table: &toml::Table) -> Self {
         Self {
             shared_paths: table.contains_key("shared_paths"),
+            read_only_paths: table.contains_key("read_only_paths"),
             gui_mode: table.contains_key("gui_mode"),
             allow_private_egress: table.contains_key("allow_private_egress"),
         }
@@ -222,9 +294,17 @@ impl FileKeys {
 }
 
 /// Which widening settings an environment variable set this run.
+///
+/// A per-key flag set, as with [`FileKeys`] — see its note on
+/// `clippy::struct_excessive_bools`.
+#[allow(
+    clippy::struct_excessive_bools,
+    reason = "FR-1705: one provenance bit per widening key"
+)]
 #[derive(Debug, Default, Clone, Copy)]
 struct EnvKeys {
     shared_paths: bool,
+    read_only_paths: bool,
     gui_mode: bool,
     allow_private_egress: bool,
 }
@@ -273,6 +353,7 @@ fn widening_warnings(
     file: FileKeys,
     env: EnvKeys,
     baseline_shared: &[String],
+    baseline_read_only: &[String],
 ) -> Vec<String> {
     let mut warnings = Vec::new();
 
@@ -296,6 +377,12 @@ fn widening_warnings(
         warnings.push(shared_paths_warning());
     }
 
+    if provenance(file.read_only_paths, env.read_only_paths) == Provenance::Environment
+        && is_broadened(&config.read_only_paths, baseline_read_only)
+    {
+        warnings.push(read_only_paths_warning());
+    }
+
     warnings
 }
 
@@ -313,6 +400,15 @@ fn shared_paths_warning() -> String {
         "warning: shared_paths was broadened by the environment (SANDME_SHARED_PATHS) beyond your \
          config file or the default; a sandboxed command can plant this in a shell rc to pre-widen \
          your next run ({ISSUE_REF})"
+    )
+}
+
+/// The line for a `read_only_paths` the environment broadened.
+fn read_only_paths_warning() -> String {
+    format!(
+        "warning: read_only_paths was broadened by the environment (SANDME_READ_ONLY_PATHS) beyond \
+         your config file or the default; a sandboxed command can plant this in a shell rc to \
+         pre-widen your next run ({ISSUE_REF})"
     )
 }
 
@@ -388,7 +484,12 @@ mod tests {
         // is the bug this test guards against
         assert_eq!(config.shared_paths, default_shared_paths());
         assert!(!config.shared_paths.is_empty());
-        assert_eq!(config.proxy_port, 8787);
+        // The default proxy port is now 0 — the OS-chosen ephemeral port that
+        // makes parallel runs collision-free (D4); it was 8787 before.
+        assert_eq!(config.proxy_port, 0);
+        // The proxy is on and no read-only paths are granted by default.
+        assert!(config.proxy);
+        assert!(config.read_only_paths.is_empty());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -436,6 +537,8 @@ mod tests {
         }
         let mut config = Config {
             shared_paths: vec!["/file".to_string()],
+            read_only_paths: Vec::new(),
+            proxy: true,
             proxy_port: 1234,
             gui_mode: false,
             allow_private_egress: false,
@@ -451,6 +554,106 @@ mod tests {
         // Then the environment wins and blank entries are dropped
         assert_eq!(config.shared_paths, vec!["/x", "/y"]);
         assert_eq!(config.proxy_port, 7070);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn disables_the_proxy_when_the_environment_asks_for_it() {
+        // Given a config with the proxy on and read-only paths in the file, and
+        // the two new environment overrides set (one test owns these variables
+        // to keep the suite parallel-safe; this single test is their only
+        // writer). SANDME_PROXY=0 disables by the house boolean convention.
+        unsafe {
+            std::env::set_var("SANDME_PROXY", "0");
+            std::env::set_var("SANDME_READ_ONLY_PATHS", "/opt/toolchain, /usr/local ,");
+        }
+        let mut config = Config {
+            proxy: true,
+            read_only_paths: vec!["/file-only".to_string()],
+            ..Config::default()
+        };
+
+        // When the environment is applied
+        apply_env(&mut config);
+        unsafe {
+            std::env::remove_var("SANDME_PROXY");
+            std::env::remove_var("SANDME_READ_ONLY_PATHS");
+        }
+
+        // Then SANDME_PROXY=0 turned the proxy off (FR-009), and the
+        // environment's read-only paths won over the file's, blanks dropped
+        assert!(!config.proxy);
+        assert_eq!(config.read_only_paths, vec!["/opt/toolchain", "/usr/local"]);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn enables_the_proxy_for_a_true_ish_spelling() {
+        // Given the house boolean convention: `1`/`true` (case-insensitive) on,
+        // anything else off (one test owns this variable; sole writer)
+        for (value, expected) in [
+            ("1", true),
+            ("true", true),
+            ("TRUE", true),
+            ("0", false),
+            ("false", false),
+            ("no", false),
+            ("", false),
+        ] {
+            let mut config = Config::default();
+            unsafe { std::env::set_var("SANDME_PROXY", value) }
+            apply_env(&mut config);
+            assert_eq!(config.proxy, expected, "SANDME_PROXY={value:?}");
+        }
+        unsafe { std::env::remove_var("SANDME_PROXY") }
+    }
+
+    #[test]
+    fn warns_when_the_environment_broadens_read_only_paths() {
+        // Given an empty baseline (the default) and an env value naming a path,
+        // sourced from the environment
+        let config = Config {
+            read_only_paths: vec!["/opt/toolchain".to_string()],
+            ..Config::default()
+        };
+        let env = EnvKeys {
+            read_only_paths: true,
+            ..EnvKeys::default()
+        };
+
+        // When the widening warnings are computed
+        let warnings =
+            widening_warnings(&config, FileKeys::default(), env, &config.shared_paths, &[]);
+
+        // Then one names read_only_paths as broadened by the environment (FR-1003)
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("read_only_paths")
+                    && warning.contains("SANDME_READ_ONLY_PATHS")),
+            "got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn stays_silent_when_the_config_file_sets_read_only_paths() {
+        // Given read-only paths sourced from the config file, not the environment
+        let config = Config {
+            read_only_paths: vec!["/opt/toolchain".to_string()],
+            ..Config::default()
+        };
+        let file = FileKeys {
+            read_only_paths: true,
+            ..FileKeys::default()
+        };
+
+        // When the widening warnings are computed
+        let warnings =
+            widening_warnings(&config, file, EnvKeys::default(), &config.shared_paths, &[]);
+
+        // Then nothing is warned: the user set it in a file the child cannot
+        // write (FR-1002)
+        assert!(warnings.is_empty(), "got: {warnings:?}");
     }
 
     #[test]
@@ -519,7 +722,13 @@ mod tests {
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(&config, FileKeys::default(), env, &config.shared_paths);
+        let warnings = widening_warnings(
+            &config,
+            FileKeys::default(),
+            env,
+            &config.shared_paths,
+            &config.read_only_paths,
+        );
 
         // Then one names both the setting and the variable that carried it
         assert!(
@@ -544,7 +753,13 @@ mod tests {
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(&config, file, EnvKeys::default(), &config.shared_paths);
+        let warnings = widening_warnings(
+            &config,
+            file,
+            EnvKeys::default(),
+            &config.shared_paths,
+            &config.read_only_paths,
+        );
 
         // Then nothing is warned: the user set it in a file the child cannot
         // write (FR-1002)
@@ -562,7 +777,13 @@ mod tests {
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(&config, FileKeys::default(), env, &config.shared_paths);
+        let warnings = widening_warnings(
+            &config,
+            FileKeys::default(),
+            env,
+            &config.shared_paths,
+            &config.read_only_paths,
+        );
 
         // Then nothing is warned: only the widening value warrants it
         assert!(warnings.is_empty(), "got: {warnings:?}");
@@ -582,7 +803,7 @@ mod tests {
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(&config, FileKeys::default(), env, &baseline);
+        let warnings = widening_warnings(&config, FileKeys::default(), env, &baseline, &[]);
 
         // Then one names shared_paths as broadened by the environment (FR-1003)
         assert!(
@@ -608,7 +829,7 @@ mod tests {
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(&config, FileKeys::default(), env, &baseline);
+        let warnings = widening_warnings(&config, FileKeys::default(), env, &baseline, &[]);
 
         // Then nothing is warned: a narrower share is not a widening (FR-1003)
         assert!(warnings.is_empty(), "got: {warnings:?}");

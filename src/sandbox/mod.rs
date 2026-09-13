@@ -11,7 +11,7 @@ use std::process::ExitStatus;
 
 use crate::config::Config;
 use crate::error::SandmeError;
-use crate::proxy;
+use crate::proxy::{self, Server};
 
 #[cfg(target_os = "macos")]
 mod seatbelt;
@@ -44,9 +44,14 @@ pub trait Backend {
         shell_route(command)
     }
 
-    /// Build the child process, restricted per `config` and able to reach only
-    /// `proxy`. The returned command is unspawned; [`run`] wires its environment
-    /// and drives it.
+    /// Build the child process, restricted per `config` and — when `proxy` is
+    /// `Some` — able to reach that address. The returned command is unspawned;
+    /// [`run`] wires its environment and drives it.
+    ///
+    /// `proxy` is `None` when the egress proxy is disabled (`proxy = false`):
+    /// the backend then grants no network egress at all. The address is absent
+    /// precisely when there is no proxy port to grant, so the off case is
+    /// unrepresentable-as-contradictory (design D1).
     ///
     /// # Errors
     ///
@@ -57,7 +62,7 @@ pub trait Backend {
         program: &str,
         args: &[String],
         config: &Config,
-        proxy: SocketAddr,
+        proxy: Option<SocketAddr>,
     ) -> Result<tokio::process::Command, SandmeError>;
 
     /// Translate a finished status into a backend-specific exec failure, or
@@ -86,11 +91,17 @@ fn shell_route(command: &[String]) -> (String, Vec<String>) {
 
 /// Execute a command under the platform sandbox and wait for it.
 ///
-/// Resolves the operands, has the [`Backend`] build the restricted child, wires
-/// the proxy into its environment (`HTTP_PROXY`/`HTTPS_PROXY` carry the proxy's
-/// URL and credential, SPEC-0003 FR-203), forwards Ctrl-C so sandme shuts down
-/// with the child (T-007), and returns the child's status — translated to a
+/// Resolves the operands, has the [`Backend`] build the restricted child, and —
+/// when a proxy is present — wires it into the child's environment
+/// (`HTTP_PROXY`/`HTTPS_PROXY` carry the proxy's URL and credential, SPEC-0003
+/// FR-203) and points git's ssh at it, forwards Ctrl-C so sandme shuts down with
+/// the child (T-007), and returns the child's status — translated to a
 /// not-found/not-executable error where the backend can establish that cause.
+///
+/// `proxy` is `None` when the egress proxy is disabled (`proxy = false`): no
+/// proxy environment is set, git's ssh tunnel is not wired (it tunnels *through*
+/// the proxy), and the backend grants no egress — a strictly more restrictive
+/// run (design D1).
 ///
 /// # Errors
 ///
@@ -98,7 +109,7 @@ fn shell_route(command: &[String]) -> (String, Vec<String>) {
 /// be spawned, or the backend recognises the status as an exec failure.
 pub async fn run(
     config: &Config,
-    proxy: &proxy::Server,
+    proxy: Option<&proxy::Server>,
     command: &[String],
 ) -> Result<ExitStatus, SandmeError> {
     // clap's required trailing operand guarantees at least one word.
@@ -112,15 +123,33 @@ pub async fn run(
     compile_error!("sandme supports macOS and Linux only");
 
     let (program, args) = backend.resolve(command);
-    let mut child_command = backend.command(&program, &args, config, proxy.addr())?;
+    let mut child_command = backend.command(&program, &args, config, proxy.map(Server::addr))?;
 
-    let proxy_url = proxy.url();
-    child_command
-        .env("HTTP_PROXY", &proxy_url)
-        .env("HTTPS_PROXY", &proxy_url)
-        .env("http_proxy", &proxy_url)
-        .env("https_proxy", &proxy_url);
-    wire_git_ssh(&mut child_command);
+    // Only a present proxy wires egress into the child: its URL/credential and
+    // the git-over-SSH tunnel both point *at* the proxy, so with none there is
+    // nothing to point them at (design D1). With the proxy off the child gets no
+    // HTTP(S)_PROXY and no ssh ProxyCommand — no network remotes at all.
+    if let Some(proxy) = proxy {
+        let proxy_url = proxy.url();
+        child_command
+            .env("HTTP_PROXY", &proxy_url)
+            .env("HTTPS_PROXY", &proxy_url)
+            .env("http_proxy", &proxy_url)
+            .env("https_proxy", &proxy_url);
+        wire_git_ssh(&mut child_command);
+    } else {
+        // With the proxy off the child must carry no proxy variable, even one
+        // inherited from sandme's own environment: otherwise the sandbox denies
+        // the egress but the child still believes a proxy is reachable, and the
+        // spec's "none is present in the child env" would hold only on a clean
+        // environment. Clear all four spellings so the child env is proxy-free
+        // regardless of what sandme was launched with (F4).
+        child_command
+            .env_remove("HTTP_PROXY")
+            .env_remove("HTTPS_PROXY")
+            .env_remove("http_proxy")
+            .env_remove("https_proxy");
+    }
 
     let mut child = child_command.spawn().map_err(SandmeError::Execute)?;
 
