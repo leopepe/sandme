@@ -12,6 +12,7 @@
 
 use std::fmt::Write;
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 
 use crate::config::Config;
 use crate::error::SandmeError;
@@ -53,6 +54,24 @@ use crate::error::SandmeError;
 /// a character that could break out of its SBPL string literal. See
 /// [`checked_profile_path`].
 pub fn generate_profile(config: &Config, proxy: SocketAddr) -> Result<String, SandmeError> {
+    // Resolve `$HOME` once at this adapter boundary and inject it into the pure
+    // decision helpers below, mirroring the Landlock `plan_env()` precedent. The
+    // lookup stays on `std::env::var` (String; `Err`/absent on a non-UTF-8
+    // value), never its lossy `OsString` cousin: a non-UTF-8 `$HOME` must map to
+    // the absent case so the SBPL stays byte-for-byte identical for a given home
+    // (design D2).
+    let home = std::env::var("HOME").ok().map(PathBuf::from);
+    generate_profile_with_home(config, proxy, home.as_deref())
+}
+
+/// Build the profile from an explicitly injected home, the pure core of
+/// [`generate_profile`]. Tests drive this directly with a synthetic (or absent)
+/// home rather than mutating the process `$HOME`.
+fn generate_profile_with_home(
+    config: &Config,
+    proxy: SocketAddr,
+    home: Option<&Path>,
+) -> Result<String, SandmeError> {
     let mut sbpl = String::from(
         "(version 1)\n\
          (deny default)\n\
@@ -84,7 +103,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> Result<String, Sa
          (allow file-read* (subpath \"/private/etc\") (subpath \"/private/var/db/dyld\") (subpath \"/private/var/run\"))\n",
     );
 
-    append_writable_grants(&mut sbpl, config)?;
+    append_writable_grants(&mut sbpl, config, home)?;
 
     let _ = writeln!(
         sbpl,
@@ -92,7 +111,7 @@ pub fn generate_profile(config: &Config, proxy: SocketAddr) -> Result<String, Sa
         proxy.port()
     );
 
-    append_unconditional_denials(&mut sbpl)?;
+    append_unconditional_denials(&mut sbpl, home)?;
     Ok(sbpl)
 }
 
@@ -138,9 +157,13 @@ const DENIED_HOME_DIRECTORIES: [&str; 1] = [".sandme"];
 /// symlinks resolved, and — when `config.gui_mode` is set — the state and
 /// scratch directories GUI applications need. These are the only rules in the
 /// profile that vary per invocation.
-fn append_writable_grants(sbpl: &mut String, config: &Config) -> Result<(), SandmeError> {
+fn append_writable_grants(
+    sbpl: &mut String,
+    config: &Config,
+    home: Option<&Path>,
+) -> Result<(), SandmeError> {
     for path in &config.shared_paths {
-        let expanded = checked_profile_path(expand_path(path))?;
+        let expanded = checked_profile_path(expand_path(path, home))?;
         let _ = writeln!(
             sbpl,
             "(allow file-read* file-write* (subpath \"{expanded}\"))"
@@ -152,7 +175,7 @@ fn append_writable_grants(sbpl: &mut String, config: &Config) -> Result<(), Sand
         // and scratch space in the per-user temporary directory. A command that
         // is not a GUI application needs none of it, so none of it is granted
         // unless the user asks for GUI mode (issue #12).
-        if let Some(home) = canonical_home() {
+        if let Some(home) = canonical_home(home) {
             let home = checked_profile_path(home)?;
             let _ = writeln!(
                 sbpl,
@@ -189,13 +212,13 @@ fn user_temp_dir() -> Option<String> {
 /// Append the denials no configuration may lift.
 ///
 /// Writes the process-information and `kern.procargs` denials, then the
-/// home-relative path denials. The path denials are skipped when `$HOME` does
-/// not resolve; the others are written first so they are not lost with it.
+/// home-relative path denials. The path denials are skipped when no home is
+/// injected; the others are written first so they are not lost with it.
 ///
 /// Must be called last. SBPL is last-match-wins for paths, so emitted any
 /// earlier the default share would grant `~/Library` straight back and the
 /// denial does nothing.
-fn append_unconditional_denials(sbpl: &mut String) -> Result<(), SandmeError> {
+fn append_unconditional_denials(sbpl: &mut String, home: Option<&Path>) -> Result<(), SandmeError> {
     // `kern.procargs2` returns any same-uid process's environment, so reading
     // it hands the command every credential the user gave any other program
     // (issue #31). All three rules are needed and each looks redundant beside
@@ -217,7 +240,7 @@ fn append_unconditional_denials(sbpl: &mut String) -> Result<(), SandmeError> {
     sbpl.push_str("(deny process-info-pidinfo)\n");
     sbpl.push_str("(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))\n");
 
-    let Some(home) = canonical_home() else {
+    let Some(home) = canonical_home(home) else {
         return Ok(());
     };
     let home = checked_profile_path(home)?;
@@ -236,26 +259,33 @@ fn append_unconditional_denials(sbpl: &mut String) -> Result<(), SandmeError> {
     Ok(())
 }
 
-/// The home directory as the kernel sees it.
+/// The injected home directory as the kernel sees it.
 ///
-/// Returns `$HOME` with symlinks resolved, the raw value if it cannot be
-/// resolved, or `None` if `$HOME` is unset. Rules must be written from the
-/// resolved form: `/var/…` and `/private/var/…` are the same directory but not
-/// the same subpath, and a denial that does not match does not deny.
-fn canonical_home() -> Option<String> {
-    let home = std::env::var("HOME").ok()?;
-    Some(std::fs::canonicalize(&home).map_or(home, |resolved| resolved.display().to_string()))
+/// Returns the injected `home` with symlinks resolved, its raw value if it
+/// cannot be resolved, or `None` when no home was injected. Rules must be
+/// written from the resolved form: `/var/…` and `/private/var/…` are the same
+/// directory but not the same subpath, and a denial that does not match does
+/// not deny. The value is injected by [`generate_profile`], never read here
+/// from the process environment.
+fn canonical_home(home: Option<&Path>) -> Option<String> {
+    let home = home?;
+    Some(std::fs::canonicalize(home).map_or_else(
+        |_| home.display().to_string(),
+        |resolved| resolved.display().to_string(),
+    ))
 }
 
-/// Expand a leading `~/` and resolve symlinks, so a rule built from `path`
-/// matches the kernel's view of it.
+/// Expand a leading `~/` against the injected `home` and resolve symlinks, so a
+/// rule built from `path` matches the kernel's view of it.
 ///
-/// Returns `path` unchanged when `$HOME` is unset or the path does not exist.
-fn expand_path(path: &str) -> String {
+/// Returns `path` unchanged when no home was injected or the path does not
+/// exist. The home is injected by [`generate_profile`], never read here from
+/// the process environment.
+fn expand_path(path: &str, home: Option<&Path>) -> String {
     let expanded = if let Some(rest) = path.strip_prefix("~/")
-        && let Ok(home) = std::env::var("HOME")
+        && let Some(home) = home
     {
-        format!("{home}/{rest}")
+        format!("{}/{rest}", home.display())
     } else {
         path.to_string()
     };
@@ -266,13 +296,27 @@ fn expand_path(path: &str) -> String {
 mod tests {
     use super::*;
     use std::net::{Ipv4Addr, SocketAddr};
+    use std::path::Path;
 
-    /// The profile for a valid config. The tests here build from paths with no
-    /// SBPL-breaking characters, so generation never returns the error
-    /// [`checked_profile_path`] guards; the injection cases assert on
-    /// [`generate_profile`]'s `Result` directly.
+    /// A synthetic home the tests inject, so profile generation never reads the
+    /// process `$HOME` (and needs no `#[serial]` coupling around it). It does
+    /// not exist on disk, so `canonical_home` falls back to this literal — which
+    /// keeps the home-relative rules deterministic across machines.
+    const TEST_HOME: &str = "/synthetic/home";
+
+    /// The profile for a valid config, built with the synthetic [`TEST_HOME`]
+    /// injected. The tests here build from paths with no SBPL-breaking
+    /// characters, so generation never returns the error [`checked_profile_path`]
+    /// guards; the injection cases assert on the builder's `Result` directly.
     fn profile_of(config: &Config, proxy: SocketAddr) -> String {
-        generate_profile(config, proxy).expect("a valid config generates a profile")
+        profile_of_with_home(config, proxy, Some(Path::new(TEST_HOME)))
+    }
+
+    /// The profile for a valid config and an explicitly injected home (present
+    /// or absent), so home-dependent behavior is exercised by argument rather
+    /// than by mutating the process environment.
+    fn profile_of_with_home(config: &Config, proxy: SocketAddr, home: Option<&Path>) -> String {
+        generate_profile_with_home(config, proxy, home).expect("a valid config generates a profile")
     }
 
     fn config_with(paths: &[&str]) -> Config {
@@ -376,15 +420,10 @@ mod tests {
         assert!(profile.contains("(deny appleevent-send)"));
     }
 
-    // `$HOME` is process-wide, and config.rs's tests reassign it while they
-    // run. This test and the next read it twice — once here, once inside the
-    // profile — and need both reads to see the same value, so they queue
-    // behind those (serial_test's default key is shared crate-wide).
     #[test]
-    #[serial_test::serial]
     fn grants_the_home_library_only_in_gui_mode() {
         let proxy = SocketAddr::from((Ipv4Addr::LOCALHOST, 1));
-        let home = canonical_home().expect("cargo test runs with HOME set");
+        let home = canonical_home(Some(Path::new(TEST_HOME))).expect("a home is injected");
         let grant = format!("(allow file-read* file-write* (subpath \"{home}/Library\"))");
 
         // Given GUI mode, the state directory GUI applications need is granted
@@ -394,16 +433,14 @@ mod tests {
         assert!(!profile_of(&config_with(&[]), proxy).contains(&grant));
     }
 
-    // Serial for the same reason as the test above.
     #[test]
-    #[serial_test::serial]
     fn denies_the_launchd_and_keychain_directories_after_every_grant() {
         // Given the home directory shared read-write, as it is by default
         let profile = profile_of(
             &gui_config_with(&["~/"]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
         );
-        let home = canonical_home().expect("cargo test runs with HOME set");
+        let home = canonical_home(Some(Path::new(TEST_HOME))).expect("a home is injected");
 
         // Then each denial is present, and every one of them follows the last
         // allow rule in the profile: SBPL is last-match-wins, so a denial that
@@ -457,24 +494,24 @@ mod tests {
         assert!(profile.contains("(allow sysctl-read)"));
     }
 
-    // Serial because it reassigns `$HOME`, which is process-wide.
     #[test]
-    #[serial_test::serial]
     fn denies_process_information_without_a_home() {
-        // Given no `$HOME` for the home-relative denials to be built from
-        let original = std::env::var("HOME").ok();
-        unsafe { std::env::remove_var("HOME") };
-        let profile = profile_of(
+        // Given no home injected for the home-relative denials to be built from
+        let profile = profile_of_with_home(
             &config_with(&[]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            None,
         );
-        if let Some(home) = original {
-            unsafe { std::env::set_var("HOME", home) };
-        }
 
-        // Then the `$HOME`-independent denials survive its absence.
+        // Then the home-independent denials survive its absence.
         assert!(profile.contains("(deny process-info*)"));
         assert!(profile.contains("(deny sysctl-read (sysctl-name-prefix \"kern.procargs\"))"));
+
+        // And the home-relative denials are omitted: with no home to build them
+        // from, nothing names `~/Library/Keychains` or the `.sandme` marker (the
+        // spec "No home injected" scenario).
+        assert!(!profile.contains("/Library/Keychains"));
+        assert!(!profile.contains(".sandme"));
     }
 
     #[test]
@@ -531,9 +568,10 @@ mod tests {
         // Given a shared path carrying a quote that closes the subpath literal
         // and appends an unrestricted grant
         let injection = "/tmp/x\")) (allow default) (allow file-read* (subpath \"/";
-        let result = generate_profile(
+        let result = generate_profile_with_home(
             &config_with(&[injection]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),
+            Some(Path::new(TEST_HOME)),
         );
 
         // Then generation fails shut rather than emit the injected profile
