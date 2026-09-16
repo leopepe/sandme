@@ -40,7 +40,7 @@ without also granting write.
 
 - No `--no-proxy` CLI flag or any other new command-line flag (SPEC-0001: config/env only).
 - No new proxy *modes* (transparent, external); `proxy` is a single boolean.
-- No read-without-execute bucket; `read_only_paths` is one bucket, read+execute (design D5).
+- No read-without-execute bucket; `read_only_paths` is one bucket, read+execute (FR-1703).
 - No reconciliation machinery for `proxy = false` + `allow_private_egress` beyond documentation.
 - No baking a toolchain directory (e.g. `/opt/homebrew`) into the base set.
 - No re-doing the IPv6 ephemeral-port fix; no CI matrix (the Linux path stays a review claim,
@@ -158,7 +158,7 @@ without also granting write.
   write-and-review claim, executed by the deferred #56 CI. The `plan.rs` decision layer is
   `cfg`-neutral and unit-tested on macOS.
 - `proxy = false` disables **all** network remotes — git-over-SSH (the gated `wire_git_ssh` tunnel,
-  design D1) **and** HTTP(S) — not just the HTTP proxy. An SSH git failure under `proxy = false` is
+  FR-1701) **and** HTTP(S) — not just the HTTP proxy. An SSH git failure under `proxy = false` is
   expected behaviour, not a bug.
 
 ## Success criteria *(mandatory)*
@@ -187,7 +187,7 @@ without also granting write.
 ## Assumptions
 
 - Execute on a pure-data read-only directory is harmless (nothing to exec), so a single read+execute
-  bucket is the simplest superset serving the toolchain case (design D5).
+  bucket is the simplest superset serving the toolchain case (FR-1703).
 - A user who relied on the fixed `8787` sets `proxy_port = 8787` explicitly to restore it.
 
 ## Open questions
@@ -196,8 +196,9 @@ without also granting write.
 
 ## Implementation tasks
 
-See `openspec/changes/batch-execution-support/tasks.md` (this spec is authored by task 4.1 of that
-change).
+Implemented by PR [#58](https://github.com/leopepe/sandme/pull/58) (issue
+[#10](https://github.com/leopepe/sandme/issues/10)). The traceability table above names the test
+covering each requirement.
 
 ## Changelog
 

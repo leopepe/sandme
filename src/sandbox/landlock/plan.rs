@@ -20,12 +20,12 @@ use crate::error::SandmeError;
 /// Top-level system directories granted read **and execute**, so a command and
 /// its dynamic linker can start and run.
 ///
-/// `/proc` is deliberately absent (D5): Landlock has no deny primitive, so the
-/// only way to keep another process's `/proc/<pid>/environ` out of reach is to
-/// never grant `/proc`. `/sys` is likewise omitted. Because these are the
-/// directories the child's `PATH` reaches, they also make the pre-spawn
-/// exec-failure resolution meaningful (D7): a program found here is executable
-/// under Landlock too.
+/// `/proc` is deliberately absent (SPEC-0016/FR-1607): Landlock has no deny
+/// primitive, so the only way to keep another process's `/proc/<pid>/environ`
+/// out of reach is to never grant `/proc`. `/sys` is likewise omitted. Because
+/// these are the directories the child's `PATH` reaches, they also make the
+/// pre-spawn exec-failure resolution meaningful (SPEC-0016/FR-1610): a program
+/// found here is executable under Landlock too.
 const READ_EXEC_DIRS: [&str; 6] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/opt"];
 
 /// Directories and device files granted read only — configuration, certificates
@@ -33,27 +33,29 @@ const READ_EXEC_DIRS: [&str; 6] = ["/usr", "/bin", "/sbin", "/lib", "/lib64", "/
 const READ_DIRS: [&str; 4] = ["/etc", "/dev/random", "/dev/urandom", "/dev/zero"];
 
 /// Device files granted read-write, including the pseudo-terminal multiplexer
-/// `/dev/ptmx` and the `/dev/pts` slave subtree (D6, superseding SPEC-0009's
-/// Linux decline). `/dev/null` and `/dev/tty` are the terminal basics a command
-/// needs to run.
+/// `/dev/ptmx` and the `/dev/pts` slave subtree (SPEC-0016/FR-1609, superseding
+/// SPEC-0009's Linux decline). `/dev/null` and `/dev/tty` are the terminal
+/// basics a command needs to run.
 const DEVICE_READ_WRITE: [&str; 4] = ["/dev/null", "/dev/tty", "/dev/ptmx", "/dev/pts"];
 
 /// Pseudo-filesystems a `shared_paths` grant must never re-admit: `/proc`
 /// (issue #31's `/proc/<pid>/environ` env leak) and `/sys`. They are kept out
-/// by *omission* from the read set (D5), but Landlock's recursive, allow-only
-/// grant has no deny primitive — so a shared path equal to `/`, or a lexical
-/// ancestor of one of these, would grant the whole tree beneath it and re-open
-/// the leak with no way to carve it back out. Such shares are refused.
+/// by *omission* from the read set (SPEC-0016/FR-1607), but Landlock's
+/// recursive, allow-only grant has no deny primitive — so a shared path equal
+/// to `/`, or a lexical ancestor of one of these, would grant the whole tree
+/// beneath it and re-open the leak with no way to carve it back out. Such
+/// shares are refused.
 const PROTECTED_ROOTS: [&str; 2] = ["/proc", "/sys"];
 
 /// Reject a `shared_paths` entry that would re-admit a [`PROTECTED_ROOTS`] tree.
 ///
 /// A share is refused when its normalized form is `/`, is one of the protected
 /// roots, or is a lexical ancestor of one — any of which would grant `/proc`
-/// (or `/sys`) recursively and defeat the deny-by-omission of D5. The check is
-/// **lexical and injection-pure**: it normalizes the path string only (folding
-/// away `.`/`..`/`//`) and performs no `canonicalize`/`stat`/environment
-/// access, so it runs and unit-tests on any target. The Linux adapter calls it
+/// (or `/sys`) recursively and defeat the deny-by-omission SPEC-0016/FR-1607
+/// relies on. The check is **lexical and injection-pure**: it normalizes the
+/// path string only (folding away `.`/`..`/`//`) and performs no
+/// `canonicalize`/`stat`/environment access, so it runs and unit-tests on any
+/// target. The Linux adapter calls it
 /// twice — once on the configured string, and again on the canonicalized path,
 /// so a symlink cannot resolve an innocuous-looking entry onto a protected tree.
 ///
@@ -99,7 +101,8 @@ fn normalize_lexical(path: &Path) -> PathBuf {
 /// Every field is supplied by the caller — the Linux adapter reads the real
 /// process environment, the unit tests pass synthetic values — so `build_plan`
 /// itself touches neither the environment nor the filesystem. A missing value
-/// is `None`; the XDG mapping falls back to a `HOME`-relative directory (D8).
+/// is `None`; the XDG mapping falls back to a `HOME`-relative directory
+/// (SPEC-0016/FR-1608).
 #[derive(Debug, Default, Clone)]
 pub struct PlanEnv {
     /// `$HOME`, the base for the `~/.config`/`~/.cache`/`~/.local/share` XDG
@@ -131,22 +134,24 @@ pub struct AccessPlan {
     /// Paths granted read and write.
     pub read_writes: Vec<PathBuf>,
     /// TCP ports the child may `connect()` to — the proxy port alone when the
-    /// proxy is on (D4), or empty when it is off (deny-all-TCP, D3).
+    /// proxy is on (SPEC-0016/FR-1606), or empty when it is off (deny-all-TCP,
+    /// SPEC-0017/FR-1706).
     pub connect_ports: Vec<u16>,
 }
 
 /// Build the [`AccessPlan`] for one invocation, as a pure function of its
-/// inputs (D1, D3).
+/// inputs (SPEC-0016/NFR-1602).
 ///
 /// `config` supplies `gui_mode`; `shared` is the already-`~`-expanded,
 /// symlink-resolved absolute form of `config.shared_paths` (the adapter in
 /// [`super`] does that live-FS work, which this module refuses); `read_only` is
 /// the same already-resolved, guarded form of `config.read_only_paths`, granted
-/// read+execute without write (design D5); `proxy` is the egress proxy address
-/// when one is running — whose port is the only outbound TCP grant — or `None`
-/// when the proxy is disabled, yielding an empty allowed-port set that is a
-/// fully-enforced deny-all-TCP state (design D3). `env` is the injected
-/// `HOME`/`XDG_*` environment. No filesystem or environment access happens here.
+/// read+execute without write (SPEC-0017/FR-1703); `proxy` is the egress proxy
+/// address when one is running — whose port is the only outbound TCP grant — or
+/// `None` when the proxy is disabled, yielding an empty allowed-port set that
+/// is a fully-enforced deny-all-TCP state (SPEC-0017/FR-1706). `env` is the
+/// injected `HOME`/`XDG_*` environment. No filesystem or environment access
+/// happens here.
 #[must_use]
 pub fn build_plan(
     config: &Config,
@@ -159,13 +164,14 @@ pub fn build_plan(
 
     let mut read_execs: Vec<PathBuf> = READ_EXEC_DIRS.iter().map(PathBuf::from).collect();
     // The shell the single-operand form is routed through. `/bin` above would
-    // normally cover it, but it is granted explicitly as a task-mandated safety
-    // net: the single-operand path MUST be executable even if the enumerated
-    // read+exec dirs are ever narrowed, so the shell is never left unreachable.
+    // normally cover it, but it is granted explicitly as a safety net: the
+    // single-operand path (SPEC-0013/FR-1301) MUST stay executable even if the
+    // enumerated read+exec dirs are ever narrowed, so the shell is never left
+    // unreachable.
     read_execs.push(PathBuf::from(crate::sandbox::SHELL));
     // Read-only paths join the read+execute bucket (one bucket, read+exec —
-    // design D5): a toolchain prefix must be executable, and execute on a
-    // pure-data directory is harmless. They are already resolved and guarded by
+    // SPEC-0017/FR-1703): a toolchain prefix must be executable, and execute
+    // on a pure-data directory is harmless. They are already resolved and guarded by
     // the adapter through the same path as `shared`.
     read_execs.extend(read_only.iter().cloned());
 
@@ -181,12 +187,13 @@ pub fn build_plan(
         read_writes,
         // Empty when the proxy is off: the base ruleset still handles
         // ConnectTcp, so an empty port list is deny-all outbound TCP, fully
-        // enforced at the ABI-v4 floor (design D3). Never a sentinel port.
+        // enforced at the ABI-v4 floor (SPEC-0017/FR-1706). Never a sentinel
+        // port.
         connect_ports: proxy.map(|p| vec![p.port()]).unwrap_or_default(),
     }
 }
 
-/// The XDG user directories GUI mode grants read-write (D8).
+/// The XDG user directories GUI mode grants read-write (SPEC-0016/FR-1608).
 ///
 /// `$XDG_CONFIG_HOME`/`$XDG_CACHE_HOME`/`$XDG_DATA_HOME` when set, else the
 /// `~/.config`/`~/.cache`/`~/.local/share` fallbacks, plus the per-user
@@ -355,8 +362,9 @@ mod tests {
 
     #[test]
     fn never_grants_proc() {
-        // /proc is closed by omission (issue #31, D5) — but only conditionally:
-        // `build_plan` echoes back whatever `shared` it is handed, so the
+        // /proc is closed by omission (issue #31, SPEC-0016/FR-1607) — but
+        // only conditionally: `build_plan` echoes back whatever `shared` it is
+        // handed, so the
         // invariant holds because the adapter rejects a `/`- or `/proc`-ancestor
         // share up front via `guard_shared_path` (see `rejects_*` below), never
         // because `build_plan` filters `/proc` itself. Here the share is benign,
@@ -485,7 +493,8 @@ mod tests {
     #[test]
     fn grants_no_outbound_tcp_when_the_proxy_is_off() {
         // Given the proxy is off (None), the allowed-port set is empty — a
-        // deny-all outbound TCP state under the base ConnectTcp handling (D3)
+        // deny-all outbound TCP state under the base ConnectTcp handling
+        // (SPEC-0017/FR-1706)
         let plan = build_plan(&config_with(false), &[], &[], None, &PlanEnv::default());
 
         assert!(
@@ -498,7 +507,8 @@ mod tests {
     #[test]
     fn grants_read_only_paths_read_execute_never_read_write() {
         // A synthetic already-resolved read-only path lands in read_execs
-        // (read+execute, one bucket — D5) and never in read_writes.
+        // (read+execute, one bucket — SPEC-0017/FR-1703) and never in
+        // read_writes.
         let read_only = [PathBuf::from("/synthetic/toolchain")];
         let plan = build_plan(
             &config_with(false),

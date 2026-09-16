@@ -1,0 +1,7 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability privately
+    url: https://github.com/leopepe/sandme/security/advisories/new
+    about: >-
+      A weakness in the sandbox must not be disclosed in a public issue. Private vulnerability
+      reporting keeps the report between you and the maintainers until a fix is released.

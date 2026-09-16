@@ -485,7 +485,7 @@ mod tests {
         assert_eq!(config.shared_paths, default_shared_paths());
         assert!(!config.shared_paths.is_empty());
         // The default proxy port is now 0 — the OS-chosen ephemeral port that
-        // makes parallel runs collision-free (D4); it was 8787 before.
+        // makes parallel runs collision-free (SPEC-0017/FR-1702); it was 8787 before.
         assert_eq!(config.proxy_port, 0);
         // The proxy is on and no read-only paths are granted by default.
         assert!(config.proxy);

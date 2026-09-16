@@ -1,0 +1,36 @@
+name: Label issues
+
+# Triage by hand does not survive an open repository, so issues are labelled from their own
+# text as they arrive. `edited` is included because a reporter who fills in the platform
+# after opening should still get the platform label.
+on:
+  issues:
+    types: [opened, edited]
+
+# The action writes labels onto the issue and reads the config from the checked-out default
+# branch; it needs nothing else.
+permissions:
+  issues: write
+  contents: read
+
+jobs:
+  label:
+    name: label
+    runs-on: ubuntu-24.04
+    # A stuck or unschedulable runner fails fast instead of hanging for hours.
+    timeout-minutes: 5
+    steps:
+      # github/issue-labeler, not actions/labeler: actions/labeler matches changed file paths
+      # on pull requests and has no issue mode at all, so pointing it at `on: issues` yields a
+      # workflow that runs green and labels nothing.
+      - uses: github/issue-labeler@v3.4
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler-config.yml
+          # Versioned regex files pair a config with a versioned issue template; the templates
+          # here are not versioned, so one flat config is what we want.
+          enable-versioned-regex: 0
+          # The action reads only the body by default, and a title such as
+          # "panic on Linux with landlock" carries most of the signal.
+          include-title: 1
+          include-body: 1

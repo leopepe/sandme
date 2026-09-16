@@ -15,3 +15,8 @@
 # is this repo's spec system.
 /.specify/
 .conductor/
+
+# Handovers pass context between local sessions and agents. They describe work
+# in flight, not the repository's history, and are stale the moment the work
+# lands — so they stay on the machine that wrote them.
+.agents/handovers/

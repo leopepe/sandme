@@ -1,0 +1,48 @@
+name: Feature request
+description: Ask for a capability sandme does not have.
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        sandme is spec-driven: any change to observable behaviour — a flag, an exit code, what the
+        profile allows, what reaches the network — is written as a spec in `docs/specs/` and
+        accepted there before it is implemented. This issue is the input to that spec, not a
+        substitute for it, so describe the need rather than the patch.
+
+        Found a security vulnerability instead? Report it privately at
+        https://github.com/leopepe/sandme/security/advisories/new.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What are you trying to do that sandme cannot do today?
+      description: The task and the situation it arises in. What the code should do comes later.
+    validations:
+      required: true
+
+  - type: textarea
+    id: current-behaviour
+    attributes:
+      label: What happens today instead
+      description: The command you run now and how it falls short, including any workaround you use.
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: How would you know the request was satisfied?
+      description: |
+        The observable result — what a command prints, exits with, or is allowed to reach. Stated
+        this way it becomes a requirement a spec can be written against and a test can check.
+    validations:
+      required: true
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Related issues, prior discussion, the platform this matters on.
+    validations:
+      required: false

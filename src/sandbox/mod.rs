@@ -51,7 +51,7 @@ pub trait Backend {
     /// `proxy` is `None` when the egress proxy is disabled (`proxy = false`):
     /// the backend then grants no network egress at all. The address is absent
     /// precisely when there is no proxy port to grant, so the off case is
-    /// unrepresentable-as-contradictory (design D1).
+    /// unrepresentable-as-contradictory (SPEC-0017/FR-1701).
     ///
     /// # Errors
     ///
@@ -101,7 +101,7 @@ fn shell_route(command: &[String]) -> (String, Vec<String>) {
 /// `proxy` is `None` when the egress proxy is disabled (`proxy = false`): no
 /// proxy environment is set, git's ssh tunnel is not wired (it tunnels *through*
 /// the proxy), and the backend grants no egress — a strictly more restrictive
-/// run (design D1).
+/// run (SPEC-0017/FR-1701).
 ///
 /// # Errors
 ///
@@ -127,8 +127,8 @@ pub async fn run(
 
     // Only a present proxy wires egress into the child: its URL/credential and
     // the git-over-SSH tunnel both point *at* the proxy, so with none there is
-    // nothing to point them at (design D1). With the proxy off the child gets no
-    // HTTP(S)_PROXY and no ssh ProxyCommand — no network remotes at all.
+    // nothing to point them at (SPEC-0017/FR-1701). With the proxy off the child
+    // gets no HTTP(S)_PROXY and no ssh ProxyCommand — no network remotes at all.
     if let Some(proxy) = proxy {
         let proxy_url = proxy.url();
         child_command
@@ -143,7 +143,7 @@ pub async fn run(
         // the egress but the child still believes a proxy is reachable, and the
         // spec's "none is present in the child env" would hold only on a clean
         // environment. Clear all four spellings so the child env is proxy-free
-        // regardless of what sandme was launched with (F4).
+        // regardless of what sandme was launched with (SPEC-0017/FR-1701).
         child_command
             .env_remove("HTTP_PROXY")
             .env_remove("HTTPS_PROXY")

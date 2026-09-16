@@ -106,7 +106,7 @@ pub enum SandmeError {
     /// (`/proc`, `/sys`), or a lexical ancestor of one. Under Landlock's
     /// allow-only, recursive grant that would re-admit `/proc/<pid>/environ`
     /// (issue #31) with no deny primitive to carve it back out, so sandme
-    /// refuses to run rather than grant the leak back (SPEC-0016, D5).
+    /// refuses to run rather than grant the leak back (SPEC-0016/FR-1607).
     #[error(
         "shared path {path:?} would grant a protected system tree (/proc or /sys); \
          narrow it to the directory you actually need; refusing to run"

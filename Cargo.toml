@@ -2,6 +2,15 @@
 name = "sandme"
 version = "0.1.0"
 edition = "2024"
+description = "Run a command inside an OS sandbox (macOS Seatbelt or Linux Landlock) with its network egress through a managed proxy"
+license = "MIT"
+repository = "https://github.com/leopepe/sandme"
+readme = "README.md"
+keywords = ["sandbox", "seatbelt", "landlock", "security", "cli"]
+categories = ["command-line-utilities", "os"]
+# Edition 2024 alone would allow 1.85, but src/ uses let-chains
+# (`if let ... && let ...`), stabilised in 1.88.
+rust-version = "1.88"
 
 [lints.clippy]
 all = { level = "deny", priority = -1 }

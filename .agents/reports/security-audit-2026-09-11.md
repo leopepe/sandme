@@ -1,5 +1,11 @@
 # Security audit — PTY allocation grant (commit `8150669`)
 
+> **Note (2026-09-16)**: source paths below reflect the module layout at the time of this
+> audit. The sandbox modules have since been split — `src/profile.rs` is now
+> `src/sandbox/seatbelt/profile.rs`, `src/sandbox.rs` is now `src/sandbox/mod.rs`, and
+> `src/app_bundle.rs` is now `src/sandbox/seatbelt/app_bundle.rs`. Findings and line
+> references are left as recorded.
+
 - **Scope of this audit**: the two classes the `security-audit` skill covers —
   string injection into the SBPL profile, and process privilege escalation out
   of the sandbox — applied to the whole profile as changed by commit `8150669`

@@ -28,8 +28,10 @@ Do not write one for finished work. The spec, the code and the commits carry tha
 
 ## 3. Location and naming
 
-- Handovers live in `.agents/handovers/`, named `NNNN-short-task-name.md`. `NNNN` is zero-padded
-  and sequential; numbers are never reused.
+- Handovers live in `.agents/handovers/`, named `NNNN-short-task-name.md`. The directory is
+  gitignored and local: a handover carries context between sessions and agents on one machine,
+  and is never committed. Create the directory when you write the first one. `NNNN` is
+  zero-padded and sequential; numbers are never reused.
 - One file per handover. A previous handover MUST NOT be edited; write a new one and link the
   one it continues.
 - Handovers are kept, not deleted. Set `Status: Complete` when the work lands.
