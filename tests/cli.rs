@@ -2065,8 +2065,20 @@ async fn reaches_an_origin_through_the_ssh_connect_tunnel() {
     // stdin/stdout across it (SPEC-0012 FR-1203, FR-1204). The helper is
     // exec'd from outside the shared path, which the profile's unscoped
     // `process-exec` already allows — so the tunnel needs no profile change.
+    //
+    // A failed tunnel is followed by a probe of the proxy the child was handed,
+    // reported on stderr and reached with `--noproxy` so curl connects to it
+    // rather than through it. It separates the two causes a bare relay failure
+    // cannot: a status means the sandbox let the child reach the proxy and the
+    // tunnel itself failed, `000` means the egress grant did not hold and no
+    // client could have reached it. It names the address, never `$HTTP_PROXY`
+    // itself, which carries this run's credential. On success the tunnel exits
+    // `0` and the probe never runs.
     cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").arg(format!(
-        "printf 'ping\\n' | '{exe}' --sandme-ssh-connect 127.0.0.1 {origin_port}"
+        "printf 'ping\\n' | '{exe}' --sandme-ssh-connect 127.0.0.1 {origin_port} || \
+         curl -sS --max-time 10 --noproxy '*' -o /dev/null \
+         -w 'proxy-probe=%{{http_code}} at %{{remote_ip}}:%{{remote_port}}\\n' \
+         \"$HTTP_PROXY\" >&2"
     ));
 
     // When the sandboxed command runs
@@ -2077,7 +2089,9 @@ async fn reaches_an_origin_through_the_ssh_connect_tunnel() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
         stdout.contains("tunnelled-pong"),
-        "the ssh tunnel did not relay the origin's reply; stdout: {stdout:?}, stderr: {}",
+        "the ssh tunnel did not relay the origin's reply; origin was \
+         127.0.0.1:{origin_port}, sandme exited {:?}, stdout: {stdout:?}, stderr: {}",
+        output.status.code(),
         String::from_utf8_lossy(&output.stderr)
     );
     let _ = std::fs::remove_dir_all(&dir);

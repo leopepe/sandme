@@ -1,8 +1,11 @@
-# Integration Tests 
+# AGENTS.md — tests/
 
-the integration tests are not an extension of the unit tests. The tests here are done emulating the users interacting with the application.
+Integration tests are not an extension of the unit tests. A test here emulates a user
+interacting with the application.
 
-**rules:**
-- integration tests must cover the full extent of the applications interfacces with the user. (for instance for CLI tests the main features and options)
-- the tests are done emulating the users interacting with the application.
-- challenge usability of the feature according to the user's perspective and interaction patterns.
+## Rules
+
+- An integration test exercises the application's interfaces with the user in full — for the CLI,
+  every main feature and every option.
+- Drive the application the way a user drives it. Do not reach past the interface.
+- Challenge the feature's usability from the user's perspective and interaction patterns.

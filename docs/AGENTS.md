@@ -15,7 +15,10 @@ Project documentation. Three directories, three different jobs: `specs/` says wh
 domain (`architecture/`, `code/`, `sdd/`) rather than numbered — a guideline is found by its subject,
 not by when it was written.
 
-**avoid listing files in the guidelines/** Do not list files in the guidelines/ in AGENTS.md or other documentation. this can introduce points of failure and future misleading instructions if files are renamed or added / removed. reference the directories and instruct to read the files in those directories. prefer to refer the directories and the file nameing convention.
+**Never list files.** No document — AGENTS.md or any other — lists the files in `guidelines/`
+or in any other directory here. A list of filenames goes stale the moment a file is renamed,
+added or removed, and a stale list misdirects the next reader. Name the directory and its naming
+convention instead, and instruct the reader to read what the directory holds.
 
 ## When to read
 

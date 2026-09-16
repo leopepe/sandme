@@ -1,0 +1,28 @@
+# Regexes for github/issue-labeler, matched against each issue's title and body.
+# One regex per label: the action requires *every* entry under a label to match, so an
+# alternation in a single pattern is the way to say "any of these". The `/.../i` form is
+# passed through to JavaScript's RegExp, which is what gives us the case-insensitive flag.
+#
+# The patterns are deliberately narrow. A label that lands on every issue carries no
+# information, so each one keys off vocabulary that only appears when the label is true —
+# word boundaries throughout, and no bare two-letter words that hide inside longer ones.
+
+# A bare "bug" is left out on purpose: issues discussing a bug that was already fixed say the
+# word in passing, and the bug form already applies this label at creation time.
+bug: '/(\bpanics?\b|\bpanicked\b|\bcrash(es|ed|ing)?\b|\bsegfaults?\b|\bregression\b|\bdeadlock\b|\bhangs\b|\bbug report\b|\bis a bug\b|\bstack trace\b|does not work as|doesn.t work as|unexpectedly (denied|allowed|blocked))/i'
+
+enhancement: '/(feature request|\benhancement\b|\bfeature\b.{0,20}\brequest\b|add (an? )?(new )?(flag|option|subcommand|backend)|add support for|please add|would be (nice|great|useful|helpful) (if|to))/i'
+
+refactor: '/\b(refactor|refactors|refactored|refactoring|code smell|dead code|duplicated? (logic|code|implementation)|duplication|simplify|simplifies|simplification|clean[ -]?up|extract (a |the )?(helper|function|module))\b/i'
+
+security: '/(sandbox escape|escapes? the sandbox|privilege escalation|escalate privileges|vulnerabilit(y|ies)|CVE-\d{4}-\d+|command injection|profile injection|shell injection|arbitrary (code|command) execution|bypass(es|ed)? the (sandbox|profile|proxy)|leaks? (a |the )?(secret|credential|token|api key))/i'
+
+documentation: '/(\bREADME\b|\bCONTRIBUTING\b|\bCHANGELOG\b|\bdocumentation\b|\brustdoc\b|\bdoc comments?\b|\bman page\b|\btypos?\b|\bwording\b)/i'
+
+ci: '/(\bGitHub Actions\b|\.github\/workflows|\bworkflow\b|\bruns-on\b|\bCI\b|\brunner\b|\bmatrix leg\b|release pipeline)/i'
+
+spec: '/(SPEC-\d+|\bFR-\d+|\bNFR-\d+|docs\/specs\/|spec-driven)/i'
+
+platform:macos: '/(\bseatbelt\b|sandbox-exec|\bmacOS\b|\bDarwin\b|apple[ -]silicon|aarch64-apple-darwin|\bsw_vers\b)/i'
+
+platform:linux: '/(\blandlock\b|\bLinux\b|\bkernel\b|\bseccomp\b|unknown-linux-gnu|\buname -r\b)/i'
