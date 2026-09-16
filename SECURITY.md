@@ -17,9 +17,7 @@ Use GitHub private vulnerability reporting: open the repository's **Security** t
 Do not open a public issue, a discussion or a pull request for a suspected escape. A pull request
 describing the fix describes the hole.
 
-<!-- MAINTAINER: fill in a fallback contact address here, or delete these two lines before
-     publishing. Do not ship this file with the placeholder in it. -->
-Fallback contact if GitHub reporting is unavailable: `<ADDRESS TO BE FILLED IN BY THE MAINTAINER>`
+Fallback contact if GitHub reporting is unavailable: lpepefreitas@gmail.com
 
 ## What a useful report contains
 

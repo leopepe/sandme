@@ -60,9 +60,7 @@ representative at an online or offline event.
 
 Instances of abusive, harassing, or otherwise unacceptable behavior may be
 reported to the community leaders responsible for enforcement at
-<!-- MAINTAINER: replace the placeholder below with a real enforcement contact
-     before publishing. Do not ship this file unfilled. -->
-`<ENFORCEMENT CONTACT TO BE FILLED IN BY THE MAINTAINER>`.
+lpepefreitas@gmail.com.
 All complaints will be reviewed and investigated promptly and fairly.
 
 All community leaders are obligated to respect the privacy and security of the
