@@ -1,0 +1,55 @@
+schema: spec-driven
+
+# Project context. Shown to AI when creating artifacts.
+context: |
+  sandme runs a command — an IDE, a coding agent, anything — inside an OS sandbox, with its
+  network egress forced through a proxy sandme owns. macOS: a Seatbelt profile via sandbox-exec.
+  Linux: a Landlock ruleset (kernel 6.7+, ABI v4) the command applies to itself before exec.
+  Rust 2024, single binary, no daemon.
+
+  Requirements live in docs/specs/, NOT in openspec/specs/. That tree is the authority:
+  numbered specs (SPEC-0001..) carrying FR-/NFR- requirement ids, with a Status field, plus
+  ADRs in docs/adrs/. docs/guidelines/sdd/spec-driven-development.md governs when a spec is
+  required and the §9 fast path that exempts trivial changes. openspec/ is the cycle's working
+  area — proposals, tasks and deltas — not a second home for requirements. Never open a change
+  that contradicts an Accepted spec or ADR; when a change needs a requirement that does not
+  exist yet, say so in the proposal rather than inventing one under openspec/specs/.
+
+  Quality gate, in this order, no warnings and no failures:
+    cargo fmt && cargo clippy --all-targets && cargo build && cargo test
+  Verify by running it. Integration tests in tests/ must pass, not only unit tests.
+
+  Read the nearest AGENTS.md to the file being edited; it takes precedence over the root one.
+  docs/guidelines/<domain>/ is authoritative per domain — read the directory, do not work from
+  memory. Conventional commits.
+
+  These files are the sandbox itself: src/sandbox/seatbelt/profile.rs, src/sandbox/landlock/,
+  src/proxy.rs, src/egress.rs, src/sandbox/mod.rs. A rule in the wrong order or a ruleset
+  granting one path too many is the product failing with every test green. Any change touching
+  them is security-critical and gets the adversarial security lens.
+
+  Dependencies: only well-known, well-maintained crates, and only for a requirement the standard
+  library and the existing Cargo.toml cannot satisfy.
+
+rules:
+  proposal:
+    - Cite the requirement this serves by id (SPEC-NNNN, FR-N, NFR-N) from docs/specs/, or state
+      explicitly that it qualifies as trivial under spec-driven-development.md §9.
+    - Name the platforms affected — macOS, Linux, or both. A change to one backend that leaves
+      the other inconsistent is a finding, not a follow-up.
+    - Always include a "Non-goals" section.
+  tasks:
+    - Annotate each task with the paths it touches, so security-critical files are visible before
+      the work starts, not after.
+    - End every task that changes Rust source with the full quality gate, in order.
+
+operations:
+  apply:
+    guidance:
+      - Run the quality gate before declaring a task done, and paste what it printed. A claim that
+        it passes is not evidence that it does.
+      - Behaviour that no requirement in docs/specs/ covers does not get implemented — report the
+        gap instead.
+  archive:
+    guidance:
+      - Record which specs and ADRs the change was checked against, by id.
