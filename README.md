@@ -1,16 +1,44 @@
 # sandme
 
-`sandme` runs a command — your IDE, your coding agent, or anything else — inside a macOS
-[Seatbelt](https://developer.apple.com/library/archive/documentation/Darwin/Reference/ManPages/man7/sandbox.7.html)
-sandbox, with its network egress routed through a proxy `sandme` starts and stops alongside it.
+`sandme` runs a command — your IDE, your coding agent, or anything else — inside a kernel sandbox,
+with its network egress routed through a proxy `sandme` starts and stops alongside it. On macOS the
+sandbox is
+[Seatbelt](https://developer.apple.com/library/archive/documentation/Darwin/Reference/ManPages/man7/sandbox.7.html),
+applied by `sandbox-exec`. On Linux it is
+[Landlock](https://docs.kernel.org/userspace-api/landlock.html), which the command applies to
+itself just before it execs.
 
 Everything is denied by default. The command gets read+write access to the paths you share, and
 one network destination: the proxy. Child processes inherit the same sandbox, so an agent that
 shells out cannot step outside it.
 
-macOS only. `sandme`'s lifetime is the command's lifetime — no daemon, nothing left running.
+Linux needs kernel 6.7 or newer — Landlock ABI v4, the first version that can restrict outbound TCP
+by port. Below that `sandme` refuses to start rather than confine the filesystem and leave egress
+open. Landlock reaches the filesystem and outbound TCP; UDP and raw sockets stay outside it.
+
+`sandme`'s lifetime is the command's lifetime — no daemon, nothing left running.
 
 ## Install
+
+**A release binary.** Every tagged release publishes a tarball per target —
+`aarch64-apple-darwin`, `x86_64-unknown-linux-gnu`, `aarch64-unknown-linux-gnu` — with a matching
+`.sha256`, on the [releases page](https://github.com/leopepe/sandme/releases):
+
+```shell
+shasum -a 256 -c sandme-v0.1.0-aarch64-apple-darwin.tar.gz.sha256
+tar xzf sandme-v0.1.0-aarch64-apple-darwin.tar.gz
+cp sandme-v0.1.0-aarch64-apple-darwin/sandme /usr/local/bin/
+```
+
+The binaries are not signed or notarised. On macOS a downloaded tarball carries a quarantine
+attribute, and Gatekeeper refuses the binary — the dialog says macOS cannot check it for malicious
+software, which reads like a broken tool and is not one. Clear the attribute once:
+
+```shell
+xattr -d com.apple.quarantine /usr/local/bin/sandme
+```
+
+**From source.**
 
 ```shell
 cargo build --release
@@ -77,7 +105,7 @@ environment always wins.
 | `read_only_paths` | `SANDME_READ_ONLY_PATHS` | array of strings (env: comma-separated) | empty | Paths the sandboxed command may **read and execute** but **not write** — a toolchain prefix (a Homebrew directory, a language runtime) whose binaries must run while writes stay confined to `shared_paths`. `~/` expands and symlinks are resolved, as for `shared_paths`. |
 | `proxy` | `SANDME_PROXY` | boolean (env: `1` or `true`) | `true` | Whether to start the egress proxy and route the command through it. Set `false` to run with **no egress on macOS, and no outbound TCP on Linux** (see the note below). |
 | `proxy_port` | `SANDME_PROXY_PORT` | integer | `0` | Loopback port the egress proxy listens on. `0` (the default) lets the OS pick a free ephemeral port, so parallel `sandme` runs never collide. Set a non-zero value to pin a fixed, predictable port. |
-| `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to `~/Library` and to your per-user temp directory (`$TMPDIR`). GUI apps and most editors need this for their state, caches and scratch space. |
+| `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to the per-user state and scratch directories: `~/Library` and `$TMPDIR` on macOS, the XDG config, cache, data and runtime directories on Linux. GUI apps and most editors need this for their state, caches and scratch space. |
 | `allow_private_egress` | `SANDME_ALLOW_PRIVATE_EGRESS` | boolean (env: `1` or `true`) | `false` | Lets the proxy relay to your own machine and network — loopback, RFC1918, link-local. Needed for a locally hosted service (a local model server, a dev API); see [Network](#what-the-sandbox-allows) for what it re-opens. |
 
 No config file is required — without one you get the defaults. A malformed file is reported
@@ -91,9 +119,8 @@ rather than ignored.
 > **`proxy = false` disables all network remotes**, not just the HTTP proxy: with no proxy running
 > the command gets no `HTTP(S)_PROXY` and no git-over-SSH tunnel, so both HTTP(S) and git-over-SSH
 > remotes fail. That is the point — a no-network run — and an SSH git failure under `proxy = false`
-> is expected, not a bug. On macOS the sandbox denies all outbound network; on Linux it denies all
-> outbound TCP, while UDP and raw sockets stay unrestricted (a pre-existing Landlock limitation,
-> consistent with SPEC-0016's TCP-only egress model).
+> is expected, not a bug. On macOS the sandbox then denies all outbound network; on Linux it denies
+> all outbound TCP, which is as far as Landlock reaches.
 
 ### A starting config
 
@@ -114,10 +141,10 @@ There is a fuller, commented version in [`examples/config.toml`](examples/config
 
 ## What the sandbox allows
 
-**Filesystem.** Read-only access to the system runtime — `/usr`, `/bin`, `/sbin`, `/System`,
-`/Library`, `/Applications`, `/private/etc`. Read+write to everything in `shared_paths`, plus —
-only with `gui_mode` — `~/Library` and your per-user temp directory (`$TMPDIR`). `gui_mode` does
-**not** open the world-shared `/private/tmp` or all of `/private/var/folders`, only the temp
+**Filesystem — macOS.** Read-only access to the system runtime — `/usr`, `/bin`, `/sbin`,
+`/System`, `/Library`, `/Applications`, `/private/etc`. Read+write to everything in `shared_paths`,
+plus — only with `gui_mode` — `~/Library` and your per-user temp directory (`$TMPDIR`). `gui_mode`
+does **not** open the world-shared `/private/tmp` or all of `/private/var/folders`, only the temp
 directory macOS gives your own session. Everything else is denied for both reading and writing.
 
 Cross-application AppleEvents (`osascript`-style scripting of other apps) are denied outright:
@@ -131,16 +158,31 @@ Three directories are denied outright, and no setting grants them back:
 | `~/Library/Keychains` | Your login keychain. Apps that store credentials through Keychain Services are unaffected: `securityd` reads the files, not the sandboxed process. |
 
 The rules are emitted last in the profile, after every grant, because Seatbelt resolves a path
-against the last rule that matches it. `shared_paths = ["~/"]` does not lift them.
+against the last rule that matches it. `shared_paths = ["~/"]` does not lift them. These denials,
+and the AppleEvents one above, are macOS-only — Landlock has no deny primitive to express them.
+
+**Filesystem — Linux.** Read+execute on the system runtime — `/usr`, `/bin`, `/sbin`, `/lib`,
+`/lib64`, `/opt` — and read on `/etc` and the random devices. Read+write to everything in
+`shared_paths`, to `/dev/null` and `/dev/tty`, and — only with `gui_mode` — to `$XDG_CONFIG_HOME`,
+`$XDG_CACHE_HOME` and `$XDG_DATA_HOME` (falling back to `~/.config`, `~/.cache` and
+`~/.local/share`) and to `$XDG_RUNTIME_DIR` (falling back to `/tmp`). Everything else is denied.
+
+`/proc` and `/sys` are granted to nothing. Landlock is allow-only with no deny primitive, so the
+one way to keep another process's `/proc/<pid>/environ` out of reach is never to grant `/proc` at
+all. For the same reason a `shared_paths` entry that would re-admit either tree — `/` itself, or an
+ancestor of one of them — is refused rather than honoured.
 
 **Pseudo-terminals.** A command may allocate one, so an editor's integrated terminal and its
 login-shell environment loading work ([#29](https://github.com/leopepe/sandme/issues/29)). This
-is a real capability — a PTY is a kernel object the command creates — and needs no `gui_mode`.
+is a real capability — a PTY is a kernel object the command creates — and needs no `gui_mode`. On
+Linux that is `/dev/ptmx` and the `/dev/pts` subtree, granted read+write for the same reason.
 
-**Network.** TCP to the proxy port, and nothing else. Direct HTTP, DNS, raw sockets, ICMP and
-listening sockets are all denied. `sandme` sets `HTTP_PROXY`, `HTTPS_PROXY` and their lowercase
-forms in the command's environment, so ordinary HTTP clients use the proxy without you configuring
-anything. HTTPS works through `CONNECT`.
+**Network.** TCP to the proxy port, and nothing else. On macOS direct HTTP, DNS, raw sockets, ICMP
+and listening sockets are all denied. On Linux the rule is a port number with no address — Landlock
+has no address predicate — so the grant is outbound TCP to that port on any host, and UDP, raw
+sockets and listening sockets are outside its reach. `sandme` sets `HTTP_PROXY`, `HTTPS_PROXY` and
+their lowercase forms in the command's environment, so ordinary HTTP clients use the proxy without
+you configuring anything. HTTPS works through `CONNECT`.
 
 The proxy refuses to relay to the destinations the sandbox itself blocks: loopback
 (`127.0.0.0/8`, `::1`), RFC1918 (`10/8`, `172.16/12`, `192.168/16`), link-local (`169.254/16`,
@@ -168,7 +210,9 @@ destinations and that credential, the proxy does not inspect or filter what it r
 
 ## Recipes
 
-Each of these is verified against the current build on macOS 26 (Apple silicon).
+Each of these is verified against the current build on macOS 26 (Apple silicon). The Homebrew,
+Neovim and Zed recipes name macOS paths and macOS behaviour — the `/opt/homebrew` prefix, the
+app-bundle redirect. The shape carries over to Linux; the prefixes do not.
 
 ### Simple commands
 
@@ -193,11 +237,10 @@ sandme 'fish -c "echo hi"'
 SANDME_SHARED_PATHS="$HOME,/opt/homebrew" sandme 'fish -c "echo hi"'
 ```
 
-Put `/opt/homebrew` in `shared_paths` once and forget about it. On Intel Macs Homebrew uses
+Put `/opt/homebrew` in `read_only_paths` once and forget about it: a toolchain prefix has to be
+readable and runnable, not writable, and `read_only_paths` grants exactly that. `shared_paths`
+works too, at the cost of granting **write** access to the prefix. On Intel Macs Homebrew uses
 `/usr/local`, which is already readable via `/usr`. If you use Nix, add `/nix` too.
-
-Be aware this grants **write** access to your Homebrew prefix — `shared_paths` has no read-only
-mode yet ([#10](https://github.com/leopepe/sandme/issues/10)).
 
 ### Neovim
 
