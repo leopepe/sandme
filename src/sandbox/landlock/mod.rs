@@ -43,8 +43,8 @@ mod backend {
     ///
     /// v1 (Linux 5.13) can restrict the filesystem; `ConnectTcp` — the outbound
     /// TCP-port restriction SPEC-0003's egress guarantee needs — arrives with v4
-    /// (D3). Below v4, sandme cannot confine egress and so fails shut rather than
-    /// confine the filesystem while leaving the network open.
+    /// (SPEC-0016/FR-1604). Below v4, sandme cannot confine egress and so fails
+    /// shut rather than confine the filesystem while leaving the network open.
     const ABI_FLOOR: i32 = 4;
 
     /// `LANDLOCK_CREATE_RULESET_VERSION` from `linux/landlock.h` — the flag that
@@ -54,7 +54,8 @@ mod backend {
 
     /// The ABI whose rights sandme requires. Rights above it (e.g. v5's
     /// `IoctlDev`) are left `BestEffort`, so a 6.7–6.9 kernel is still fully
-    /// enforceable and PTY ioctls need no dedicated grant (D3, D6).
+    /// enforceable and PTY ioctls need no dedicated grant (SPEC-0016/FR-1604,
+    /// FR-1609).
     const REQUIRED_ABI: ABI = ABI::V4;
 
     /// The Linux backend.
@@ -68,16 +69,16 @@ mod backend {
             config: &Config,
             proxy: Option<SocketAddr>,
         ) -> Result<tokio::process::Command, SandmeError> {
-            // Parent probe (D2, step 1) — a clean, up-front diagnostic when the
-            // kernel is too old. It is only a diagnostic; the child-side check
-            // below is the guarantee.
+            // Parent probe (SPEC-0016/FR-1604), step 1 — a clean, up-front
+            // diagnostic when the kernel is too old. It is only a diagnostic;
+            // the child-side check below is the guarantee.
             enforce_abi_floor()?;
 
             // Preserve SPEC-0004's exit-status contract without an exec wrapper
-            // (D7): resolve the program against sandme's own environment before
-            // spawning, so a missing/non-executable program is 127/126 here
-            // rather than an opaque start failure. `/bin/bash` (the
-            // single-operand target) is present, so only the multi-operand
+            // (SPEC-0016/FR-1610): resolve the program against sandme's own
+            // environment before spawning, so a missing/non-executable program
+            // is 127/126 here rather than an opaque start failure. `/bin/bash`
+            // (the single-operand target) is present, so only the multi-operand
             // direct-exec path can trip this.
             if let Some(failure) = executable::exec_failure(program) {
                 return Err(failure);
@@ -91,7 +92,7 @@ mod backend {
             // Read-only paths are resolved and guarded through the *same*
             // twice-checked path as shared_paths — a `/` or `/proc` read grant
             // would re-open the issue-#31 env leak exactly as a write grant
-            // would, so it gets no weaker guard (design D5).
+            // would, so it gets no weaker guard (SPEC-0017/FR-1704).
             let read_only = resolve_shared(&config.read_only_paths, env.home.as_deref())?;
             let access = plan::build_plan(config, &shared, &read_only, proxy, &env);
             let ruleset = create_ruleset(&access)?;
@@ -106,9 +107,9 @@ mod backend {
             // ruleset is already built, `Option::take` and `restrict_self` do no
             // heap allocation, and a failure is reported as an errno-based
             // `io::Error` (never an allocating `io::Error::new(_, String)`). This
-            // is the load-bearing fail-shut check (D2, step 2) — anything short
-            // of full enforcement returns `EPERM`, so the command never execs
-            // unconfined.
+            // is the load-bearing fail-shut check (SPEC-0016/FR-1603) —
+            // anything short of full enforcement returns `EPERM`, so the
+            // command never execs unconfined.
             unsafe {
                 command.pre_exec(move || {
                     let ruleset = ruleset
@@ -120,9 +121,10 @@ mod backend {
             Ok(tokio::process::Command::from(command))
         }
 
-        /// Returns `None` for every finished status (D7): with no exec wrapper
-        /// there is no sentinel to decode, so the not-found/not-executable
-        /// determination is made before spawning (see [`Self::command`]).
+        /// Returns `None` for every finished status (SPEC-0016/FR-1610): with
+        /// no exec wrapper there is no sentinel to decode, so the
+        /// not-found/not-executable determination is made before spawning (see
+        /// [`Self::command`]).
         fn exec_failure(&self, _program: &str, _status: ExitStatus) -> Option<SandmeError> {
             None
         }
@@ -149,7 +151,7 @@ mod backend {
         }
     }
 
-    /// Refuse up front on a kernel below the ABI floor (D2/D3).
+    /// Refuse up front on a kernel below the ABI floor (SPEC-0016/FR-1604).
     fn enforce_abi_floor() -> Result<(), SandmeError> {
         let supported = supported_abi();
         if supported >= ABI_FLOOR {
@@ -185,7 +187,8 @@ mod backend {
     }
 
     /// Build the ruleset from the plan, in the parent, with `HardRequirement` so
-    /// the crate refuses to silently downgrade on an old kernel (D2, step 2).
+    /// the crate refuses to silently downgrade on an old kernel
+    /// (SPEC-0016/FR-1603).
     fn create_ruleset(access: &AccessPlan) -> Result<RulesetCreated, SandmeError> {
         let created = base_ruleset().map_err(rule_error)?;
         // Read-only: config, certs and the random devices a command reads but
@@ -271,7 +274,7 @@ mod backend {
         Ok(created)
     }
 
-    /// Add the outbound TCP-port rules — the proxy port alone (D4).
+    /// Add the outbound TCP-port rules — the proxy port alone (SPEC-0016/FR-1606).
     fn add_ports(
         mut created: RulesetCreated,
         ports: &[u16],
@@ -293,7 +296,8 @@ mod backend {
     }
 
     /// Resolve each `shared_paths` entry's `~` and symlinks to an absolute real
-    /// path — the live-filesystem work [`plan`] deliberately refuses (D1/D3).
+    /// path — the live-filesystem work [`plan`] deliberately refuses
+    /// (SPEC-0016/NFR-1602).
     ///
     /// A path that cannot be resolved (it does not exist) is dropped: Landlock
     /// cannot grant a hierarchy that has no descriptor to open.
@@ -302,7 +306,7 @@ mod backend {
     /// configured string (a lexical, injection-pure reject of a `/`- or
     /// `/proc`/`/sys`-ancestor share), and again on the canonicalized path, so a
     /// symlink cannot resolve an innocuous-looking entry onto a protected tree
-    /// (F1/D5). Either rejection fails the whole invocation shut.
+    /// (SPEC-0016/FR-1607). Either rejection fails the whole invocation shut.
     fn resolve_shared(paths: &[String], home: Option<&Path>) -> Result<Vec<PathBuf>, SandmeError> {
         let mut resolved = Vec::with_capacity(paths.len());
         for path in paths {

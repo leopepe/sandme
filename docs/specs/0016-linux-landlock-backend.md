@@ -86,8 +86,8 @@ drop-in port of Seatbelt:
 
 - Standing up a GitHub Actions CI matrix or executing `cargo build`/`test` on a real Linux kernel
   (deferred; no CI workflow is created).
-- A bubblewrap/firejail wrapper backend (weighed and rejected in design D0 — Landlock needs no extra
-  host binary and works where unprivileged user namespaces are disabled).
+- A bubblewrap/firejail wrapper backend (weighed and rejected: Landlock needs no extra host binary
+  and works where unprivileged user namespaces are disabled).
 - Implementing the network-namespace egress filter or a narrow `/proc/self` grant this cycle (named
   follow-ups below).
 - Editing SPEC-0001/0003/0005/0009 in place.
@@ -195,7 +195,7 @@ risk instead of discovering it.
 
 These are **contracts**, not caveats. Each names the follow-up that closes it.
 
-### Egress is a weakened contract — port only, not address (SPEC-0003, D4/R1)
+### Egress is a weakened contract — port only, not address (SPEC-0003, FR-1606)
 
 Landlock filters outbound TCP by **port number only**, with no host/IP predicate. sandme cannot
 reproduce the macOS rule `(allow network-outbound (remote ip "localhost:<port>"))`, which pins both
@@ -209,7 +209,7 @@ a live exfiltration path on Linux, recorded as a stated security limitation. **F
 loopback-only network namespace for the child, pinning egress to `127.0.0.1:<port>` the way Seatbelt
 does (see the kernel-floor follow-up below — the same netns work closes both).
 
-### `/proc` is denied by omission; the ptrace read is out of scope (SPEC-0005/0006, D5)
+### `/proc` is denied by omission; the ptrace read is out of scope (SPEC-0005/0006, FR-1607)
 
 Omitting `/proc` closes the `/proc/<pid>/environ` env-leak of issue #31. Two residuals are recorded:
 
@@ -224,13 +224,13 @@ Omitting `/proc` closes the `/proc/<pid>/environ` env-leak of issue #31. Two res
   tooling reads — a stricter posture than macOS. **Follow-up:** a future narrow, per-process
   `/proc/self` grant if a safe mechanism is found.
 
-### PTY ioctls are unrestricted on granted devices (SPEC-0009, D6)
+### PTY ioctls are unrestricted on granted devices (SPEC-0009, FR-1609)
 
 Because sandme does not require ABI v5, Landlock does not restrict `ioctl` on device files, so
 `TIOCSCTTY`/`TIOCSTI` need no dedicated grant — and, as on macOS, cannot be filtered by request.
 Recorded residual: ioctls are unrestricted on the granted PTY devices.
 
-### The exit-status contract holds only through the granted directories (SPEC-0004, D7)
+### The exit-status contract holds only through the granted directories (SPEC-0004, FR-1610)
 
 `executable::locate` resolves the program using sandme's own **unsandboxed** `PATH`/FS view, while
 the child may exec only inside the read+execute grant set (FR-1605). To keep 126/127 meaningful, that
@@ -239,7 +239,7 @@ under Landlock" describe the same set. **Residual:** a `PATH` directory delibera
 grant set still fails **opaquely** — a Landlock exec denial surfacing as `SandmeError::Execute`, not
 126 — so the contract holds only for programs reached through the granted directories.
 
-## Named follow-up — lower the floor and pin the egress address (D3/D4/R6)
+## Named follow-up — lower the floor and pin the egress address (FR-1604/FR-1606)
 
 The **ABI v4 floor is a choice, not an inherent Linux limit.** It follows only from making Landlock
 the *sole* egress mechanism: `ConnectTcp` is what needs 6.7, so requiring it draws the cliff.

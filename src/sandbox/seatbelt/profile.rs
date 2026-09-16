@@ -23,7 +23,7 @@ use crate::error::SandmeError;
 /// the address the egress proxy listens on when one is running — the only
 /// destination the profile permits — or `None` when the proxy is disabled, in
 /// which case no egress line is emitted and the command has no network egress
-/// at all (design D1/D2).
+/// at all (SPEC-0017/FR-1701).
 ///
 /// Returns the complete profile text: everything denied by default, then the
 /// process and file-read grants a command needs to start, the configuration's
@@ -61,7 +61,7 @@ pub fn generate_profile(config: &Config, proxy: Option<SocketAddr>) -> Result<St
     // lookup stays on `std::env::var` (String; `Err`/absent on a non-UTF-8
     // value), never its lossy `OsString` cousin: a non-UTF-8 `$HOME` must map to
     // the absent case so the SBPL stays byte-for-byte identical for a given home
-    // (design D2).
+    // (SPEC-0015/SC-1502).
     let home = std::env::var("HOME").ok().map(PathBuf::from);
     generate_profile_with_home(config, proxy, home.as_deref())
 }
@@ -107,10 +107,11 @@ fn generate_profile_with_home(
 
     append_writable_grants(&mut sbpl, config, home)?;
 
-    // The one egress line is emitted only when a proxy is running (design D2).
-    // When the proxy is off, the base `(deny default)` already denies all
-    // outbound network, so the command has no egress — the default path (Some,
-    // empty read_only_paths) stays byte-for-byte identical (NFR-1601).
+    // The one egress line is emitted only when a proxy is running
+    // (SPEC-0017/FR-1701). When the proxy is off, the base `(deny default)`
+    // already denies all outbound network, so the command has no egress — the
+    // default path (Some, empty read_only_paths) stays byte-for-byte identical
+    // (NFR-1601).
     if let Some(proxy) = proxy {
         let _ = writeln!(
             sbpl,
@@ -122,7 +123,7 @@ fn generate_profile_with_home(
     // Read-only grants come after the writable grants and the conditional egress
     // line, but before the unconditional denials, so the closing denials still
     // win last-match and a read-only grant cannot resurrect a denied tree
-    // (design D5). Empty `read_only_paths` appends nothing (NFR-1601).
+    // (SPEC-0017/FR-1703). Empty `read_only_paths` appends nothing (NFR-1601).
     append_read_only_grants(&mut sbpl, config, home)?;
 
     append_unconditional_denials(&mut sbpl, home)?;
@@ -209,7 +210,7 @@ fn append_writable_grants(
     Ok(())
 }
 
-/// Append the read-only grants the configuration asks for (design D5).
+/// Append the read-only grants the configuration asks for (SPEC-0017/FR-1703).
 ///
 /// Writes one `(allow file-read* (subpath "…"))` rule per entry in
 /// `config.read_only_paths` — read (and execute), never `file-write*` — with
@@ -642,7 +643,8 @@ mod tests {
     #[test]
     fn omits_the_egress_line_when_the_proxy_is_disabled() {
         // Given the proxy is off (None), the network-outbound egress line is
-        // never emitted (design D2) — the base (deny default) denies all egress
+        // never emitted (SPEC-0017/FR-1701) — the base (deny default) denies
+        // all egress
         let profile =
             generate_profile_with_home(&config_with(&[]), None, Some(Path::new(TEST_HOME)))
                 .expect("a valid config generates a profile");
@@ -731,7 +733,7 @@ mod tests {
     #[test]
     fn read_only_grants_precede_the_unconditional_denials() {
         // Given a read-only path, the closing denials still follow it, so
-        // last-match-wins keeps a denied tree denied (design D5)
+        // last-match-wins keeps a denied tree denied (SPEC-0017/FR-1703)
         let profile = profile_of(
             &read_only_config_with(&["/tmp/toolchain"]),
             SocketAddr::from((Ipv4Addr::LOCALHOST, 1)),

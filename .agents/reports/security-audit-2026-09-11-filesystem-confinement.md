@@ -1,5 +1,11 @@
 # Security audit — commit `be0993f` "fix(profile): confine to the working directory and the per-user temp dir (#12)"
 
+> **Note (2026-09-16)**: source paths below reflect the module layout at the time of this
+> audit. The sandbox modules have since been split — `src/profile.rs` is now
+> `src/sandbox/seatbelt/profile.rs`, `src/sandbox.rs` is now `src/sandbox/mod.rs`, and
+> `src/app_bundle.rs` is now `src/sandbox/seatbelt/app_bundle.rs`. Findings and line
+> references are left as recorded.
+
 - **Date**: 2026-09-11
 - **Scope of this audit**: the diff of `be0993f` against `main` (`53482e4`) —
   the change to `default_shared_paths()` (`src/config.rs`), the new
@@ -100,7 +106,7 @@ env- or config-derived string reaches `writeln!(sbpl, …)`.
 
   ```
   # CONTROL
-  /bin/sh: /Users/pepe/sandme-tmpdir-injection-poc-5609: Operation not permitted
+  /bin/sh: <home>/sandme-tmpdir-injection-poc-5609: Operation not permitted
   exit=1
   marker exists after control? -> NO
   # ATTACK

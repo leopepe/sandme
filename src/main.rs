@@ -1,5 +1,6 @@
-//! sandme — run a coding IDE or code agent inside a macOS Seatbelt sandbox,
-//! with its network egress routed through a proxy sandme manages.
+//! sandme — run a coding IDE or code agent inside an operating-system sandbox —
+//! macOS Seatbelt or Linux Landlock — with its network egress routed through a
+//! proxy sandme manages.
 
 mod config;
 mod credential;
@@ -31,7 +32,7 @@ const NOT_EXECUTABLE: u8 = 126;
 /// The status for a command that could not be found (FR-803).
 const NOT_FOUND: u8 = 127;
 
-/// sandme — run an IDE or code agent inside a macOS Seatbelt sandbox
+/// sandme — run an IDE or code agent inside a macOS Seatbelt or Linux Landlock sandbox
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
 struct Cli {
@@ -90,7 +91,8 @@ async fn run(command: &[String]) -> Result<ExitStatus, SandmeError> {
     // proxy is a broken sandbox, so the invocation fails instead (FR-005).
     // `serve` takes the whole config now: the port, and the credential the
     // child must present (SPEC-0003/FR-302). When `proxy = false` no proxy is
-    // started, and the command runs with no network egress at all (design D1).
+    // started, and the command runs with no network egress at all
+    // (SPEC-0017/FR-1701).
     let server = if config.proxy {
         Some(proxy::serve(&config)?)
     } else {

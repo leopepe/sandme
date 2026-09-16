@@ -28,7 +28,8 @@ Do not write one for finished work. The spec, the code and the commits carry tha
 
 ## 3. Location and naming
 
-- Handovers live in `.agents/handovers/`, named `NNNN-short-task-name.md`. `NNNN` is zero-padded
+- Handovers live in `.agents/handovers/`, named `NNNN-short-task-name.md`. The directory is not
+  in the repository until the first handover is written — create it then. `NNNN` is zero-padded
   and sequential; numbers are never reused.
 - One file per handover. A previous handover MUST NOT be edited; write a new one and link the
   one it continues.

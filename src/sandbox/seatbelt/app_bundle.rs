@@ -105,9 +105,12 @@ fn bundle_root(path: &Path) -> Option<&Path> {
 /// and a `../` in it would send sandme outside the bundle it just identified.
 ///
 /// Only the XML `Info.plist` form is parsed; a binary `Info.plist` is not
-/// decoded, and no `plist` dependency is added to decode one. A bundle that ships
-/// one falls to [`Resolution::Unreadable`] — sandme warns and runs the wrapper
-/// unchanged. Trigger geometry and rationale: design.md D3.
+/// decoded, and no `plist` dependency is added to decode one: a plist is read
+/// only for an on-`PATH` wrapper that canonicalizes into a `.app` bundle, and
+/// every wrapper observed to do so ships an XML plist, so the binary form is
+/// anticipation rather than evidence. A bundle that ships one falls to
+/// [`Resolution::Unreadable`] — sandme warns and runs the wrapper unchanged
+/// (SPEC-0014/FR-1403).
 fn executable_name(plist: &str) -> Option<&str> {
     let after_key = plist.split_once("<key>CFBundleExecutable</key>")?.1;
     let value = after_key.split_once("<string>")?.1;
