@@ -1,8 +1,10 @@
 # AGENTS.md
 
-sandme is a macOS command-line tool that runs a coding IDE or code agent inside a Seatbelt
-sandbox, with the sandboxed process's network egress forced through a proxy sandme manages.
-Rust 2024, single binary, macOS only.
+sandme is a command-line tool that runs a coding IDE or code agent inside an operating-system
+sandbox, with the sandboxed process's network egress forced through a proxy sandme manages. The
+restriction is a Seatbelt profile on macOS and a Landlock ruleset on Linux, the latter requiring
+kernel 6.7 or newer (Landlock ABI v4).
+Rust 2024, single binary, macOS and Linux.
 
 ## Setup commands
 
@@ -67,7 +69,7 @@ change is still cheap to alter:
 
 | The change touches | Also run | Why this one |
 | --- | --- | --- |
-| `src/profile.rs` (the Seatbelt profile), `src/proxy.rs` or `src/egress.rs` (egress), or `src/sandbox.rs` (what the child is launched as) | `/security-audit` | These files *are* the sandbox. A profile rule in the wrong order, a proxy that forwards further than the profile allows, or the wrong program reaching `sandbox-exec`, is the product failing while every test stays green. |
+| `src/sandbox/seatbelt/profile.rs` (the Seatbelt profile), `src/sandbox/landlock/` (the Landlock ruleset), `src/proxy.rs` or `src/egress.rs` (egress), or `src/sandbox/mod.rs` (what the child is launched as) | `/security-audit` | These files *are* the sandbox. A profile rule in the wrong order, a ruleset granting a path or port it should not, a proxy that forwards further than the sandbox allows, or the wrong program being the one that gets launched, is the product failing while every test stays green. |
 | `docs/specs/` — a new spec, a delta, or a `Status` change | `spec-review` agent | Finds specs that contradict each other, requirements nothing implements, and behaviour no requirement covers. |
 | Module boundaries — a new module, a moved responsibility, a new trait or layer | `architecture-review` agent | Checks the change against accepted ADRs in `docs/adrs/` and against what each module is for. |
 | The startup path, async code, or anything with an `NFR-` budget | `performance-review` agent | Produces measurements. A performance claim with no numbers behind it is not a result. |
@@ -81,6 +83,10 @@ happened.
 
 <!-- graft:start -->
 ## Graft — repo context graph
+
+> **Optional local tooling.** graft is not a project dependency and is not in the repository —
+> the `graft/` graph is generated on a machine where graft is installed. Everything below applies
+> only if you have it; without it, use ordinary search and read the source directly.
 
 This repo is indexed in `graft/`: small linked markdown nodes that explain each
 system and carry exact file:line spans, kept in sync with the code through git.
