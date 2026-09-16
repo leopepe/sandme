@@ -81,6 +81,20 @@ is the trigger. When you hand work to a subagent, the table goes with the task: 
 reads this file will not run any of them, and "the agent did not know" is not a review having
 happened.
 
+## Releasing
+
+Use `/release` for anything that ends in a tag: cutting a version, publishing a release, or
+answering what is needed before one. The skill owns the whole procedure — pre-flight checks, a
+rehearsal of the pipeline, a smoke test of the packaged binary, and the report.
+
+Two steps in it are irreversible and MUST NOT be taken without the maintainer's approval at that
+moment: pushing the tag, and publishing the draft. Being asked to make a release authorizes the
+process, not those two steps; the skill stops and asks at each. A pushed tag cannot be moved
+without breaking everyone who fetched it, and a published release cannot be recalled.
+
+`.github/workflows/release.yml` only builds and packages. It runs on a pushed `v*` tag, and on
+`workflow_dispatch` it rehearses everything except publishing.
+
 <!-- graft:start -->
 ## Graft — repo context graph
 
