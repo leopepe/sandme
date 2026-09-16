@@ -1,7 +1,8 @@
 # AGENTS.md — docs/
 
-Project documentation. Three directories, three different jobs: `specs/` says what to build,
-`adrs/` says why a structural decision was made, `guidelines/` says how to work.
+Project documentation. Four directories, four different jobs: `specs/` says what to build,
+`adrs/` says why a structural decision was made, `guidelines/` says how to work, and `reference/`
+says what the shipped tool does for the people using it.
 
 ## Layout
 
@@ -10,10 +11,18 @@ Project documentation. Three directories, three different jobs: `specs/` says wh
 | `specs/` | One file per change: requirements, scenarios, tasks, verification | `NNNN-short-feature-name.md` | `0000-spec-template.md` |
 | `adrs/` | Architectural decisions and their reasoning | `NNNN-short-adr-name.md` | `0000-adr-template.md` |
 | `guidelines/` | Domain rules that apply across changes | `<domain>/<topic>.md` | none |
+| `reference/` | User-facing reference for the shipped behaviour: what the sandbox allows, every config key, exit statuses, known limitations | `<topic>.md` | none |
 
 `NNNN` is zero-padded and sequential; numbers are never reused. Guidelines are grouped by
 domain (`architecture/`, `code/`, `sdd/`) rather than numbered — a guideline is found by its subject,
-not by when it was written.
+not by when it was written. `reference/` is named by subject for the same reason.
+
+`reference/` is the only directory here addressed to users rather than to contributors. It
+describes behaviour that already ships; it does not decide, propose or require anything. A page
+there is written after the spec it documents reaches `Implemented`, and links to that spec rather
+than restating its requirement text. The README links into `reference/` and keeps only what a
+reader needs before deciding to install: what the tool is, how to install and run it, what it
+requires, and what it does.
 
 **Never list files.** No document — AGENTS.md or any other — lists the files in `guidelines/`
 or in any other directory here. A list of filenames goes stale the moment a file is renamed,
@@ -37,6 +46,8 @@ convention instead, and instruct the reader to read what the directory holds.
 - An architectural decision gets an ADR, linked from the spec. Specs link to ADRs; they never
   restate them.
 - A rule that outlives a single change gets a guideline, not a paragraph in a spec.
+- A change to observable behaviour updates the `reference/` page that describes it, in the same
+  pull request. A reference page that disagrees with the binary is worse than no page.
 
 ## Rules
 
