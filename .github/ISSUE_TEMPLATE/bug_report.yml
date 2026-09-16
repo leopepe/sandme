@@ -1,0 +1,79 @@
+name: Bug report
+description: sandme sandboxed the wrong thing, refused a command it should allow, or failed outright.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a security vulnerability instead? Do not file it here — report it privately at
+        https://github.com/leopepe/sandme/security/advisories/new.
+
+        A sandbox bug can only be reproduced from the inputs that built the profile, so every
+        field below is required. Redact secrets in the config and the environment; keep the keys.
+
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      description: Which sandbox backend was in play — Seatbelt on macOS, Landlock on Linux.
+      options:
+        - macOS
+        - Linux
+    validations:
+      required: true
+
+  - type: input
+    id: os-version
+    attributes:
+      label: OS or kernel version
+      description: macOS version (`sw_vers -productVersion`) or kernel release (`uname -r`).
+      placeholder: "15.3.1 — or 6.8.0-45-generic"
+    validations:
+      required: true
+
+  - type: input
+    id: sandme-version
+    attributes:
+      label: Output of `sandme --version`
+      placeholder: "sandme 0.1.0"
+    validations:
+      required: true
+
+  - type: textarea
+    id: command
+    attributes:
+      label: The exact command you ran
+      description: Verbatim, with every flag and argument. Paraphrasing loses the detail that caused it.
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: config
+    attributes:
+      label: Contents of `~/.sandme/config.toml` and any `SANDME_*` environment variables
+      description: |
+        The config file and the environment together decide the profile, so both are needed even
+        when they look irrelevant. Paste the whole file; write `# empty` or `# no file` if there is none.
+      render: toml
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected to happen
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: What happened instead, including the exact error text
+      description: |
+        Paste the output verbatim. sandme prefixes its own messages with `sandme: ` and passes
+        everything else through untouched, so that prefix tells us whether the error came from
+        sandme or from the program it launched — do not trim it.
+      render: text
+    validations:
+      required: true
