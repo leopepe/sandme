@@ -1,4 +1,10 @@
+<p align="center">
+  <img src="assets/sandme-logo.jpg" alt="sandme — encapsulate, contain, play safe" width="420">
+</p>
+
 # sandme
+
+[![version](https://img.shields.io/github/v/release/leopepe/sandme?label=version&color=2d6a4a)](https://github.com/leopepe/sandme/releases)
 
 `sandme` runs a command — your IDE, your coding agent, or anything else — inside a kernel sandbox,
 with its network egress routed through a proxy `sandme` starts and stops alongside it. On macOS the
