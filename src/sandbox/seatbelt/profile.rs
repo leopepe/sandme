@@ -318,14 +318,10 @@ fn canonical_home(home: Option<&Path>) -> Option<String> {
 /// exist. The home is injected by [`generate_profile`], never read here from
 /// the process environment.
 fn expand_path(path: &str, home: Option<&Path>) -> String {
-    let expanded = if let Some(rest) = path.strip_prefix("~/")
-        && let Some(home) = home
-    {
-        format!("{}/{rest}", home.display())
-    } else {
-        path.to_string()
-    };
-    std::fs::canonicalize(&expanded).map_or(expanded, |resolved| resolved.display().to_string())
+    let expanded = crate::sandbox::expand_tilde(path, home);
+    std::fs::canonicalize(&expanded).map_or(expanded.display().to_string(), |resolved| {
+        resolved.display().to_string()
+    })
 }
 
 #[cfg(test)]
