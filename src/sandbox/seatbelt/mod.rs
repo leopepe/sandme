@@ -30,21 +30,12 @@ const EXEC_FAILED: i32 = 71;
 pub struct Seatbelt;
 
 impl Backend for Seatbelt {
-    /// As the shared shell routing, but an app-bundle CLI wrapper at the program
-    /// position is redirected to the bundle's own executable.
-    fn resolve(&self, command: &[String]) -> (String, Vec<String>) {
-        if command.len() == 1 {
-            (
-                SHELL.to_string(),
-                vec!["-c".to_string(), redirect_shell_command(&command[0])],
-            )
-        } else {
-            let (wrapper, rest) = command
-                .split_first()
-                .expect("run() asserts a non-empty command");
-            let program = app_bundle::main_executable(wrapper).unwrap_or_else(|| wrapper.clone());
-            (program, rest.to_vec())
-        }
+    fn redirect_program(&self, word: &str) -> String {
+        app_bundle::main_executable(word).unwrap_or_else(|| word.to_string())
+    }
+
+    fn redirect_shell_command(&self, command: &str) -> String {
+        redirect_shell_command_fn(command)
     }
 
     fn command(
@@ -90,7 +81,7 @@ impl Backend for Seatbelt {
 /// A wrapper further inside the string — `cd /x && zed .` — is left to the
 /// shell: finding it would mean parsing the string, and a wrong guess would
 /// silently run something the user never asked for (issue #13).
-fn redirect_shell_command(command: &str) -> String {
+fn redirect_shell_command_fn(command: &str) -> String {
     let trimmed = command.trim_start();
     let (head, arguments) = trimmed
         .split_once(char::is_whitespace)
@@ -129,7 +120,7 @@ mod tests {
         // A name nothing on PATH answers to: there is no bundle to redirect to,
         // so the string reaches the shell exactly as the user typed it.
         let command = "sandme-no-such-command --flag ~/Workspace/";
-        assert_eq!(redirect_shell_command(command), command);
+        assert_eq!(redirect_shell_command_fn(command), command);
     }
 
     #[test]
@@ -144,7 +135,7 @@ mod tests {
             "$EDITOR .",
             "",
         ] {
-            assert_eq!(redirect_shell_command(command), command);
+            assert_eq!(redirect_shell_command_fn(command), command);
         }
     }
 

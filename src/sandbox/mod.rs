@@ -37,11 +37,28 @@ const SHELL: &str = "/bin/bash";
 pub trait Backend {
     /// Resolve the user's operands to the program to launch and its arguments.
     ///
-    /// The default is the cross-platform shell routing ([`shell_route`]). A
-    /// backend overrides it to add platform program resolution — the macOS
-    /// backend redirects an app-bundle CLI wrapper to the bundle's executable.
+    /// The default uses the SPEC-0013 branch with overridable identity steps.
     fn resolve(&self, command: &[String]) -> (String, Vec<String>) {
-        shell_route(command)
+        if command.len() == 1 {
+            let one = &command[0];
+            (
+                SHELL.into(),
+                vec!["-c".into(), self.redirect_shell_command(one)],
+            )
+        } else {
+            let (head, rest) = command.split_first().expect("run() asserts non-empty");
+            (self.redirect_program(head), rest.to_vec())
+        }
+    }
+
+    /// Override identity step: program word rewrite (e.g. app-bundle redirect).
+    fn redirect_program(&self, word: &str) -> String {
+        word.to_string()
+    }
+
+    /// Override identity step: shell command string rewrite.
+    fn redirect_shell_command(&self, command: &str) -> String {
+        command.to_string()
     }
 
     /// Build the child process, restricted per `config` and — when `proxy` is
@@ -68,25 +85,6 @@ pub trait Backend {
     /// Translate a finished status into a backend-specific exec failure, or
     /// `None` to pass the status through unchanged.
     fn exec_failure(&self, program: &str, status: ExitStatus) -> Option<SandmeError>;
-}
-
-/// Route the operands to a program and arguments, without platform resolution.
-///
-/// A single operand is a shell command string run through [`SHELL`] `-c`;
-/// multiple operands are a direct exec — the first the program, the rest its
-/// arguments, passed through unshelled and unquoted (posix.md §5).
-fn shell_route(command: &[String]) -> (String, Vec<String>) {
-    if command.len() == 1 {
-        (
-            SHELL.to_string(),
-            vec!["-c".to_string(), command[0].clone()],
-        )
-    } else {
-        let (program, args) = command
-            .split_first()
-            .expect("run() asserts a non-empty command");
-        (program.clone(), args.to_vec())
-    }
 }
 
 /// Execute a command under the platform sandbox and wait for it.
