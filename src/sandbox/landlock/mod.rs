@@ -330,15 +330,7 @@ mod backend {
     /// [`PlanEnv`] the adapter already reads for its access plan — leaving
     /// anything else unchanged. Reads no process environment of its own.
     fn expand_tilde(path: &str, home: Option<&Path>) -> PathBuf {
-        // `home` carries `plan_env()`'s `var_os` (OsString) semantics, inherited
-        // from `PlanEnv`: intentional, so a non-UTF-8 `$HOME` expands the tilde
-        // rather than dropping it (widening toward the user's configured share).
-        if let Some(rest) = path.strip_prefix("~/")
-            && let Some(home) = home
-        {
-            return home.join(rest);
-        }
-        PathBuf::from(path)
+        crate::sandbox::expand_tilde(path, home)
     }
 
     /// Read the real `HOME`/`XDG_*` environment into an injected [`PlanEnv`], so

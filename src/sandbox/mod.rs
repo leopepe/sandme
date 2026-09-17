@@ -7,6 +7,7 @@
 //! macOS today, a Linux (Landlock) backend later (issue #8, SPEC-0015).
 
 use std::net::SocketAddr;
+use std::path::{Path, PathBuf};
 use std::process::ExitStatus;
 
 use crate::config::Config;
@@ -26,6 +27,19 @@ mod landlock;
 /// `/bin/bash`, not `/bin/sh`: macOS's `/bin/sh` is bash in POSIX mode, where
 /// process substitution (`cat <(echo hi)`) is a syntax error (issue #36).
 /// `/bin/bash` exists on both macOS and Linux, so the routing itself is shared.
+/// Expand a leading `~/` against the injected `home`, leaving anything else
+/// unchanged. Shared by both sandbox backends (consistency.md §4); each
+/// adapter reads `$HOME` with its own semantics (`env::var` for Seatbelt,
+/// `var_os` for Landlock) before calling this.
+pub fn expand_tilde(path: &str, home: Option<&Path>) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/")
+        && let Some(home) = home
+    {
+        return home.join(rest);
+    }
+    PathBuf::from(path)
+}
+
 const SHELL: &str = "/bin/bash";
 
 /// One platform's way of building and applying the sandbox.
