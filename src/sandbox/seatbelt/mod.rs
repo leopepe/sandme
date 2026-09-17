@@ -9,7 +9,7 @@
 use std::net::SocketAddr;
 use std::process::ExitStatus;
 
-use super::{Backend, SHELL};
+use super::Backend;
 use crate::config::Config;
 use crate::error::SandmeError;
 use crate::executable;
@@ -65,7 +65,7 @@ impl Backend for Seatbelt {
     }
 }
 
-/// The shell command string handed to `/bin/bash -c` (see [`SHELL`]), with an
+/// The shell command string handed to `/bin/bash -c` (see [`super::SHELL`]), with an
 /// app-bundle CLI wrapper at its head redirected to the bundle's own executable.
 ///
 /// Only the first word is touched, and only when nothing in it can make it
