@@ -197,7 +197,7 @@ a narrower or equal env value does not cry wolf.
 | FR-1004 | `attributes_a_setting_to_the_environment_even_when_the_config_file_set_it_too`, `stays_silent_when_the_config_file_enables_private_egress`, `keeps_defaults_for_absent_settings` (`src/config.rs`) — the environment, config-file and default attributions respectively |
 | FR-1005 | `warns_when_a_widening_setting_comes_from_the_environment` asserts the warning on stderr, the child's line on stdout, and a successful run (`tests/cli.rs`) |
 | NFR-1001 | `environment_overrides_previous_values`, `opens_private_egress_only_when_the_environment_asks_for_it` (`src/config.rs`) — precedence unchanged |
-| NFR-1002 | Review: provenance detection reads the two partial layers already built from the config file and the environment; no filesystem, network or dependency is added (`Cargo.toml` unchanged) |
+| NFR-1002 | Review: provenance detection reads the environment layer already built alongside the config-file layer; no filesystem, network or dependency is added (`Cargo.toml` unchanged) |
 
 ## Assumptions
 
