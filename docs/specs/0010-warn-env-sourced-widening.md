@@ -194,10 +194,10 @@ a narrower or equal env value does not cry wolf.
 | FR-1001 | `warns_when_the_environment_enables_private_egress`, `warns_when_the_environment_broadens_shared_paths` (`src/config.rs`); `warns_when_a_widening_setting_comes_from_the_environment` (`tests/cli.rs`) |
 | FR-1002 | `stays_silent_when_the_config_file_enables_private_egress`, `stays_silent_when_the_environment_disables_private_egress`, `load_stays_silent_when_the_config_file_enables_private_egress` (`src/config.rs`); `stays_silent_when_the_same_setting_comes_from_the_config_file` (`tests/cli.rs`) |
 | FR-1003 | `warns_when_the_environment_broadens_shared_paths`, `stays_silent_when_env_shared_paths_stay_within_the_baseline` (`src/config.rs`) |
-| FR-1004 | `provenance_attributes_the_environment_over_the_file`, `provenance_attributes_the_config_file_when_the_environment_is_absent`, `provenance_attributes_the_default_when_neither_sets_it` (`src/config.rs`) |
+| FR-1004 | `attributes_a_setting_to_the_environment_even_when_the_config_file_set_it_too`, `stays_silent_when_the_config_file_enables_private_egress`, `keeps_defaults_for_absent_settings` (`src/config.rs`) — the environment, config-file and default attributions respectively |
 | FR-1005 | `warns_when_a_widening_setting_comes_from_the_environment` asserts the warning on stderr, the child's line on stdout, and a successful run (`tests/cli.rs`) |
 | NFR-1001 | `environment_overrides_previous_values`, `opens_private_egress_only_when_the_environment_asks_for_it` (`src/config.rs`) — precedence unchanged |
-| NFR-1002 | Review: provenance detection reads the already-parsed table and the returned env flags; no filesystem, network or dependency is added (`Cargo.toml` unchanged) |
+| NFR-1002 | Review: provenance detection reads the environment layer already built alongside the config-file layer; no filesystem, network or dependency is added (`Cargo.toml` unchanged) |
 
 ## Assumptions
 
@@ -227,7 +227,8 @@ is a breaking product change and therefore out of scope here:
   that fully closes it is to make the security-relevant settings (`allow_private_egress`,
   `gui_mode`, and the widening of `shared_paths`) settable *only* by a CLI flag or the config file
   — never by an environment variable the sandboxed child can plant. Concretely: drop
-  `SANDME_ALLOW_PRIVATE_EGRESS` and `SANDME_GUI_MODE` from `apply_env`, add `--allow-private-egress`
+  `SANDME_ALLOW_PRIVATE_EGRESS` and `SANDME_GUI_MODE` from the environment layer, add
+  `--allow-private-egress`
   and `--gui-mode` flags (posix.md §5: every short option a long form; list-valued
   `--shared-paths a,b`), and keep `SANDME_SHARED_PATHS` only if a warned widening is deemed
   acceptable. This is a breaking change to a documented interface (README recipes and the SPEC-0003
@@ -238,8 +239,8 @@ is a breaking product change and therefore out of scope here:
 ## Implementation tasks
 
 - [x] **T-1001** — Track per-setting provenance (config-file / environment / default) in
-      `config.rs`: parse the config file into a table to detect which keys it set, and have
-      `apply_env` report which variables it applied (covers FR-1004, NFR-1001, NFR-1002)
+      `config.rs`: read each source into a partial layer whose `Option` fields record which keys
+      that source set, the environment layer last (covers FR-1004, NFR-1001, NFR-1002)
 - [x] **T-1002** — Compute widening warnings from provenance, including the `shared_paths`
       broadening check against the pre-environment baseline; return them from `load` as data
       (covers FR-1001, FR-1002, FR-1003)
@@ -254,3 +255,4 @@ is a breaking product change and therefore out of scope here:
 | --- | --- |
 | 2026-09-12 | Initial draft: warn loudly on env-sourced widening (issue #30, direction 3). Direction 2 (CLI-only flags) recorded under Open questions for the maintainer. |
 | 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#48](https://github.com/leopepe/sandme/pull/48); all tasks are ticked and every Verification test exists. The one open question (direction 2, CLI-only flags) is a non-blocking breaking-change deferral recorded for the maintainer ([#34](https://github.com/leopepe/sandme/issues/34)). |
+| 2026-09-17 | No requirement changed. The R3 refactor ([#62](https://github.com/leopepe/sandme/issues/62), PR [#72](https://github.com/leopepe/sandme/pull/72)) replaced `FileKeys`/`EnvKeys`/`Provenance`/`provenance()` with one partial config layer, so T-1001 and the NFR-1002 review note now describe the layer rather than the deleted table-and-flags mechanism. FR-1004's Verification row cited the three `provenance_*` unit tests, which went with the function they tested; it now cites `attributes_a_setting_to_the_environment_even_when_the_config_file_set_it_too` (new), `stays_silent_when_the_config_file_enables_private_egress` and `keeps_defaults_for_absent_settings` for the three attributions. |
