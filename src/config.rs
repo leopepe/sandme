@@ -185,26 +185,7 @@ fn load_from(home: Option<&Path>) -> Result<Loaded, SandmeError> {
     let env = Layer::from_environment();
     let config = file_merged.merge(&env);
 
-    let file_keys = FileKeys {
-        shared_paths: file.shared_paths.is_some(),
-        read_only_paths: file.read_only_paths.is_some(),
-        gui_mode: file.gui_mode.is_some(),
-        allow_private_egress: file.allow_private_egress.is_some(),
-    };
-    let env_keys = EnvKeys {
-        shared_paths: env.shared_paths.is_some(),
-        read_only_paths: env.read_only_paths.is_some(),
-        gui_mode: env.gui_mode.is_some(),
-        allow_private_egress: env.allow_private_egress.is_some(),
-    };
-
-    let warnings = widening_warnings(
-        &config,
-        file_keys,
-        env_keys,
-        &baseline_shared,
-        &baseline_read_only,
-    );
+    let warnings = widening_warnings(&config, &env, &baseline_shared, &baseline_read_only);
     Ok(Loaded { config, warnings })
 }
 
@@ -301,111 +282,58 @@ fn env_bool(s: &str) -> bool {
     s == "1" || s.to_lowercase() == "true"
 }
 
-/// Which widening settings a config file set, as opposed to leaving defaulted.
-///
-/// One `bool` per widening key: this is a flag set, not a struct that happens to
-/// hold booleans, so `clippy::struct_excessive_bools` (which suggests grouping
-/// unrelated flags into an enum/state type) does not apply — the fields ARE the
-/// per-key provenance bits, and grouping them would obscure the one-to-one map.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "FR-1705: one provenance bit per widening key"
-)]
-#[derive(Debug, Default, Clone, Copy)]
-struct FileKeys {
-    shared_paths: bool,
-    read_only_paths: bool,
-    gui_mode: bool,
-    allow_private_egress: bool,
-}
-
-/// Which widening settings an environment variable set this run.
-///
-/// A per-key flag set, as with [`FileKeys`] — see its note on
-/// `clippy::struct_excessive_bools`.
-#[allow(
-    clippy::struct_excessive_bools,
-    reason = "FR-1705: one provenance bit per widening key"
-)]
-#[derive(Debug, Default, Clone, Copy)]
-struct EnvKeys {
-    shared_paths: bool,
-    read_only_paths: bool,
-    gui_mode: bool,
-    allow_private_egress: bool,
-}
-
-/// Where a setting's effective value came from (FR-1004).
-///
-/// Only [`Provenance::Environment`] is a concern for issue #30. The sandboxed
-/// command cannot write `~/.sandme/config.toml` — the sandbox denies it — but
-/// under the default home share it can plant `export SANDME_…` in a shell rc,
-/// so the *next* run starts pre-widened with nothing warning the user. Recording
-/// the source lets a widening setting be called out when it came from the
-/// environment, and stay silent when the user set it in their own config file.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Provenance {
-    /// Built-in default; neither the file nor the environment set it.
-    Default,
-    /// Set in `~/.sandme/config.toml`, which the sandbox denies the child.
-    ConfigFile,
-    /// Set by a `SANDME_*` variable, which the child can plant in a shell rc.
-    Environment,
-}
-
-/// Resolve a setting's provenance. The environment overrides the file (FR-009),
-/// so its presence wins the attribution.
-fn provenance(file_set: bool, env_set: bool) -> Provenance {
-    if env_set {
-        Provenance::Environment
-    } else if file_set {
-        Provenance::ConfigFile
-    } else {
-        Provenance::Default
-    }
-}
-
 /// The issue that motivates the warnings, cited in each so a reader can find it.
 const ISSUE_REF: &str = "issue #30";
 
 /// Warn about each security-widening setting the environment supplied (FR-1001).
 ///
 /// A boolean opt-in (`gui_mode`, `allow_private_egress`) warns only when the
-/// environment turned it on; `shared_paths` warns only when the environment
-/// broadened it beyond the file-or-default baseline (FR-1003). A setting from
-/// the config file or left at its default never warns (FR-1002).
+/// environment turned it on; `shared_paths`/`read_only_paths` warn only when the
+/// environment broadened them beyond the file-or-default baseline (FR-1003,
+/// FR-1705). A setting from the config file or left at its default never warns
+/// (FR-1002): the environment merges last (FR-009), so `env` alone — whether it
+/// set the key, and to what — is enough to decide; the file layer plays no part
+/// in that decision and is not a parameter here.
 fn widening_warnings(
     config: &Config,
-    file: FileKeys,
-    env: EnvKeys,
+    env: &Layer,
     baseline_shared: &[String],
     baseline_read_only: &[String],
 ) -> Vec<String> {
     let mut warnings = Vec::new();
 
-    if config.allow_private_egress
-        && provenance(file.allow_private_egress, env.allow_private_egress)
-            == Provenance::Environment
-    {
+    // `proxy` and `proxy_port` are deliberately not checked below. FR-1001 enumerates
+    // `shared_paths`, `gui_mode` and `allow_private_egress`, and FR-1705 adds
+    // `read_only_paths`, as the closed list of warned settings; `proxy` and `proxy_port`
+    // are not on it. `proxy = false` narrows access — no proxy is started and the sandbox
+    // grants no egress at all (see the doc comment on `Config::proxy`) — so warning on it
+    // would be wrong, and `proxy_port` carries no security concern (SPEC-0010 Non-goals).
+    // Every field of `Layer` is now an `Option`, so `env.proxy == Some(true)` type-checks;
+    // this comment, not the type, is what keeps that check from being added.
+
+    if config.allow_private_egress && env.allow_private_egress == Some(true) {
         warnings.push(opt_in_warning(
             "allow_private_egress = true",
             "SANDME_ALLOW_PRIVATE_EGRESS",
         ));
     }
 
-    if config.gui_mode && provenance(file.gui_mode, env.gui_mode) == Provenance::Environment {
+    // The `config.gui_mode &&` conjunct does not block the falsey case
+    // (`SANDME_GUI_MODE=0` over a file-set `gui_mode = true`) — `Some(false) != Some(true)`
+    // does that on its own. The environment merges last (FR-009), so whenever
+    // `env.gui_mode == Some(true)` holds, `config.gui_mode` is already `true`: the conjunct
+    // is redundant given the merge order, not protective. It stays for readability — "the
+    // effective value is the widening one, and the environment carried it" — so do not
+    // read it as what blocks `SANDME_GUI_MODE=0`; dropping it would be equally safe today.
+    if config.gui_mode && env.gui_mode == Some(true) {
         warnings.push(opt_in_warning("gui_mode = true", "SANDME_GUI_MODE"));
     }
 
-    if provenance(file.shared_paths, env.shared_paths) == Provenance::Environment
-        && is_broadened(&config.shared_paths, baseline_shared)
-    {
+    if env.shared_paths.is_some() && is_broadened(&config.shared_paths, baseline_shared) {
         warnings.push(shared_paths_warning());
     }
 
-    if provenance(file.read_only_paths, env.read_only_paths) == Provenance::Environment
-        && is_broadened(&config.read_only_paths, baseline_read_only)
-    {
+    if env.read_only_paths.is_some() && is_broadened(&config.read_only_paths, baseline_read_only) {
         warnings.push(read_only_paths_warning());
     }
 
@@ -468,28 +396,6 @@ fn is_within(path: &str, root: &str) -> bool {
 fn normalize(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() { "/" } else { trimmed }
-}
-
-/// Test-only compatibility shim over the new `Layer`/`merge` shape.
-///
-/// `load_from` no longer calls this — it merges `Layer::from_environment()`
-/// onto `Config` directly — but four pre-existing tests below still call
-/// `apply_env` as their subject, and task 2 (`partial-config-layer`, 1a) must
-/// not edit a test body. `#[cfg(test)]` keeps it out of the production
-/// binary, so it does not linger as dead code there. It is deleted, and its
-/// four callers rewritten to `Config::default().merge(&Layer::from_environment())`
-/// directly, in the follow-up task that rewrites `widening_warnings` (design.md D6).
-#[cfg(test)]
-fn apply_env(config: &mut Config) -> EnvKeys {
-    let layer = Layer::from_environment();
-    let env = EnvKeys {
-        shared_paths: layer.shared_paths.is_some(),
-        read_only_paths: layer.read_only_paths.is_some(),
-        gui_mode: layer.gui_mode.is_some(),
-        allow_private_egress: layer.allow_private_egress.is_some(),
-    };
-    *config = std::mem::take(config).merge(&layer);
-    env
 }
 
 #[cfg(test)]
@@ -583,7 +489,7 @@ mod tests {
             std::env::set_var("SANDME_SHARED_PATHS", "/x, /y ,");
             std::env::set_var("SANDME_PROXY_PORT", "7070");
         }
-        let mut config = Config {
+        let config = Config {
             shared_paths: vec!["/file".to_string()],
             read_only_paths: Vec::new(),
             proxy: true,
@@ -593,7 +499,7 @@ mod tests {
         };
 
         // When the environment is applied
-        apply_env(&mut config);
+        let config = config.merge(&Layer::from_environment());
         unsafe {
             std::env::remove_var("SANDME_SHARED_PATHS");
             std::env::remove_var("SANDME_PROXY_PORT");
@@ -615,14 +521,14 @@ mod tests {
             std::env::set_var("SANDME_PROXY", "0");
             std::env::set_var("SANDME_READ_ONLY_PATHS", "/opt/toolchain, /usr/local ,");
         }
-        let mut config = Config {
+        let config = Config {
             proxy: true,
             read_only_paths: vec!["/file-only".to_string()],
             ..Config::default()
         };
 
         // When the environment is applied
-        apply_env(&mut config);
+        let config = config.merge(&Layer::from_environment());
         unsafe {
             std::env::remove_var("SANDME_PROXY");
             std::env::remove_var("SANDME_READ_ONLY_PATHS");
@@ -648,9 +554,8 @@ mod tests {
             ("no", false),
             ("", false),
         ] {
-            let mut config = Config::default();
             unsafe { std::env::set_var("SANDME_PROXY", value) }
-            apply_env(&mut config);
+            let config = Config::default().merge(&Layer::from_environment());
             assert_eq!(config.proxy, expected, "SANDME_PROXY={value:?}");
         }
         unsafe { std::env::remove_var("SANDME_PROXY") }
@@ -664,14 +569,13 @@ mod tests {
             read_only_paths: vec!["/opt/toolchain".to_string()],
             ..Config::default()
         };
-        let env = EnvKeys {
-            read_only_paths: true,
-            ..EnvKeys::default()
+        let env = Layer {
+            read_only_paths: Some(config.read_only_paths.clone()),
+            ..Layer::default()
         };
 
         // When the widening warnings are computed
-        let warnings =
-            widening_warnings(&config, FileKeys::default(), env, &config.shared_paths, &[]);
+        let warnings = widening_warnings(&config, &env, &config.shared_paths, &[]);
 
         // Then one names read_only_paths as broadened by the environment (FR-1003)
         assert!(
@@ -690,14 +594,9 @@ mod tests {
             read_only_paths: vec!["/opt/toolchain".to_string()],
             ..Config::default()
         };
-        let file = FileKeys {
-            read_only_paths: true,
-            ..FileKeys::default()
-        };
 
         // When the widening warnings are computed
-        let warnings =
-            widening_warnings(&config, file, EnvKeys::default(), &config.shared_paths, &[]);
+        let warnings = widening_warnings(&config, &Layer::default(), &config.shared_paths, &[]);
 
         // Then nothing is warned: the user set it in a file the child cannot
         // write (FR-1002)
@@ -711,11 +610,10 @@ mod tests {
         // (one test owns this variable to keep the suite parallel-safe;
         // the calls are safe here: this single test is its only writer)
         for value in ["1", "true", "TRUE"] {
-            let mut config = Config::default();
             unsafe { std::env::set_var("SANDME_ALLOW_PRIVATE_EGRESS", value) }
 
             // When the environment is applied
-            apply_env(&mut config);
+            let config = Config::default().merge(&Layer::from_environment());
 
             // Then the proxy is allowed to reach the host's own networks
             assert!(config.allow_private_egress, "{value} should enable it");
@@ -724,37 +622,77 @@ mod tests {
         // And anything else leaves the safe default in place: the setting
         // re-opens the pivot in issue #15, so it takes an explicit yes
         for value in ["0", "false", "yes", ""] {
-            let mut config = Config::default();
             unsafe { std::env::set_var("SANDME_ALLOW_PRIVATE_EGRESS", value) }
-            apply_env(&mut config);
+            let config = Config::default().merge(&Layer::from_environment());
             assert!(!config.allow_private_egress, "{value} should not enable it");
         }
         unsafe { std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS") }
     }
 
     #[test]
-    fn provenance_attributes_the_environment_over_the_file() {
-        // Given a setting present in both the file and the environment
-        // When its provenance is resolved
-        // Then the environment wins, because it overrides the file (FR-009)
-        assert_eq!(provenance(true, true), Provenance::Environment);
-        assert_eq!(provenance(false, true), Provenance::Environment);
-    }
+    fn attributes_each_widening_warning_to_the_layer_that_set_it() {
+        // A `WidenFn` sets a widened value for one warned key on a layer; a
+        // `type` alias keeps the case table below from tripping
+        // clippy::type_complexity.
+        type WidenFn = fn(&mut Layer);
+        // The layer that results from firing `set` only when `active`, so
+        // each case below reads as one call instead of an inline branch.
+        fn layer_for(set: WidenFn, active: bool) -> Layer {
+            let mut layer = Layer::default();
+            if active {
+                set(&mut layer);
+            }
+            layer
+        }
 
-    #[test]
-    fn provenance_attributes_the_config_file_when_the_environment_is_absent() {
-        // Given a setting the file sets and the environment does not
-        // When its provenance is resolved
-        // Then it is attributed to the config file
-        assert_eq!(provenance(true, false), Provenance::ConfigFile);
-    }
+        // Given each of the four warned keys (FR-1001, FR-1705), and a way to
+        // build a layer that widens that key
+        let widen: [(&str, WidenFn); 4] = [
+            ("shared_paths", |l| {
+                l.shared_paths = Some(vec!["/widened".to_string()]);
+            }),
+            ("read_only_paths", |l| {
+                l.read_only_paths = Some(vec!["/widened-ro".to_string()]);
+            }),
+            ("gui_mode", |l| l.gui_mode = Some(true)),
+            ("allow_private_egress", |l| {
+                l.allow_private_egress = Some(true);
+            }),
+        ];
 
-    #[test]
-    fn provenance_attributes_the_default_when_neither_sets_it() {
-        // Given a setting neither the file nor the environment sets
-        // When its provenance is resolved
-        // Then it is attributed to the built-in default
-        assert_eq!(provenance(false, false), Provenance::Default);
+        // crossed with the three states its provenance can be in: set by the
+        // file only, set by the environment only, or set by neither (FR-1004)
+        let states = [
+            ("file-only", true, false, false),
+            ("env-only", false, true, true),
+            ("neither", false, false, false),
+        ];
+
+        let cases = widen.iter().flat_map(|&(key, set)| {
+            states
+                .iter()
+                .map(move |&(state, fw, ew, warn)| (key, set, state, fw, ew, warn))
+        });
+
+        for (key, set, state, file_widened, env_widened, expect_warning) in cases {
+            // When the file layer is merged first and the FR-1003 baseline is
+            // taken off that intermediate value, exactly as load_from does,
+            // then the environment layer is merged on top
+            let file_merged = Config::default().merge(&layer_for(set, file_widened));
+            let baseline_shared = file_merged.shared_paths.clone();
+            let baseline_read_only = file_merged.read_only_paths.clone();
+            let env = layer_for(set, env_widened);
+            let config = file_merged.merge(&env);
+            let warnings = widening_warnings(&config, &env, &baseline_shared, &baseline_read_only);
+
+            // Then a warning names this key exactly when the environment —
+            // not the file — is the layer that set it
+            let warned = warnings.iter().any(|warning| warning.contains(key));
+            assert_eq!(
+                warned, expect_warning,
+                "key={key} state={state} got={warnings:?}"
+            );
+        }
     }
 
     #[test]
@@ -764,19 +702,14 @@ mod tests {
             allow_private_egress: true,
             ..Config::default()
         };
-        let env = EnvKeys {
-            allow_private_egress: true,
-            ..EnvKeys::default()
+        let env = Layer {
+            allow_private_egress: Some(true),
+            ..Layer::default()
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(
-            &config,
-            FileKeys::default(),
-            env,
-            &config.shared_paths,
-            &config.read_only_paths,
-        );
+        let warnings =
+            widening_warnings(&config, &env, &config.shared_paths, &config.read_only_paths);
 
         // Then one names both the setting and the variable that carried it
         assert!(
@@ -795,16 +728,11 @@ mod tests {
             allow_private_egress: true,
             ..Config::default()
         };
-        let file = FileKeys {
-            allow_private_egress: true,
-            ..FileKeys::default()
-        };
 
         // When the widening warnings are computed
         let warnings = widening_warnings(
             &config,
-            file,
-            EnvKeys::default(),
+            &Layer::default(),
             &config.shared_paths,
             &config.read_only_paths,
         );
@@ -819,19 +747,14 @@ mod tests {
         // Given SANDME_ALLOW_PRIVATE_EGRESS present but set to a falsey value, so
         // the environment sourced it yet it is not a widening
         let config = Config::default();
-        let env = EnvKeys {
-            allow_private_egress: true,
-            ..EnvKeys::default()
+        let env = Layer {
+            allow_private_egress: Some(false),
+            ..Layer::default()
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(
-            &config,
-            FileKeys::default(),
-            env,
-            &config.shared_paths,
-            &config.read_only_paths,
-        );
+        let warnings =
+            widening_warnings(&config, &env, &config.shared_paths, &config.read_only_paths);
 
         // Then nothing is warned: only the widening value warrants it
         assert!(warnings.is_empty(), "got: {warnings:?}");
@@ -844,19 +767,14 @@ mod tests {
             gui_mode: true,
             ..Config::default()
         };
-        let env = EnvKeys {
-            gui_mode: true,
-            ..EnvKeys::default()
+        let env = Layer {
+            gui_mode: Some(true),
+            ..Layer::default()
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(
-            &config,
-            FileKeys::default(),
-            env,
-            &config.shared_paths,
-            &config.read_only_paths,
-        );
+        let warnings =
+            widening_warnings(&config, &env, &config.shared_paths, &config.read_only_paths);
 
         // Then one names both the setting and the variable that carried it
         assert!(
@@ -876,23 +794,14 @@ mod tests {
             gui_mode: false,
             ..Config::default()
         };
-        let file = FileKeys {
-            gui_mode: true,
-            ..FileKeys::default()
-        };
-        let env = EnvKeys {
-            gui_mode: true,
-            ..EnvKeys::default()
+        let env = Layer {
+            gui_mode: Some(false),
+            ..Layer::default()
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(
-            &config,
-            file,
-            env,
-            &config.shared_paths,
-            &config.read_only_paths,
-        );
+        let warnings =
+            widening_warnings(&config, &env, &config.shared_paths, &config.read_only_paths);
 
         // Then nothing is warned: the effective value is not the widening one
         assert!(warnings.is_empty(), "got: {warnings:?}");
@@ -906,13 +815,13 @@ mod tests {
             shared_paths: vec!["/".to_string()],
             ..Config::default()
         };
-        let env = EnvKeys {
-            shared_paths: true,
-            ..EnvKeys::default()
+        let env = Layer {
+            shared_paths: Some(config.shared_paths.clone()),
+            ..Layer::default()
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(&config, FileKeys::default(), env, &baseline, &[]);
+        let warnings = widening_warnings(&config, &env, &baseline, &[]);
 
         // Then one names shared_paths as broadened by the environment (FR-1003)
         assert!(
@@ -932,13 +841,13 @@ mod tests {
             shared_paths: vec!["/home/user/project".to_string()],
             ..Config::default()
         };
-        let env = EnvKeys {
-            shared_paths: true,
-            ..EnvKeys::default()
+        let env = Layer {
+            shared_paths: Some(config.shared_paths.clone()),
+            ..Layer::default()
         };
 
         // When the widening warnings are computed
-        let warnings = widening_warnings(&config, FileKeys::default(), env, &baseline, &[]);
+        let warnings = widening_warnings(&config, &env, &baseline, &[]);
 
         // Then nothing is warned: a narrower share is not a widening (FR-1003)
         assert!(warnings.is_empty(), "got: {warnings:?}");

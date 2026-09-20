@@ -95,7 +95,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       depends-on: 1
       touches: src/config.rs
 
-- [ ] 3. Task 1b — the warning rewrite (resolves F8; design.md D2, D5, D6): delete `FileKeys`,
+- [x] 3. Task 1b — the warning rewrite (resolves F8; design.md D2, D5, D6): delete `FileKeys`,
       `EnvKeys`, `Provenance` and `provenance()`; rewrite `widening_warnings` to read the two
       layers directly, with an in-place comment naming `proxy` and `proxy_port` as deliberately
       unwarned and citing FR-1001 plus FR-1705 as the closed list of warned settings (design.md
