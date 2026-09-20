@@ -191,13 +191,13 @@ a narrower or equal env value does not cry wolf.
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-1001 | `warns_when_the_environment_enables_private_egress`, `warns_when_the_environment_broadens_shared_paths` (`src/config.rs`); `warns_when_a_widening_setting_comes_from_the_environment` (`tests/cli.rs`) |
-| FR-1002 | `stays_silent_when_the_config_file_enables_private_egress`, `stays_silent_when_the_environment_disables_private_egress`, `load_stays_silent_when_the_config_file_enables_private_egress` (`src/config.rs`); `stays_silent_when_the_same_setting_comes_from_the_config_file` (`tests/cli.rs`) |
+| FR-1001 | `warns_when_the_environment_enables_private_egress`, `warns_when_the_environment_broadens_shared_paths`, `warns_when_the_environment_enables_gui_mode` (`src/config.rs`); `warns_when_a_widening_setting_comes_from_the_environment` (`tests/cli.rs`) |
+| FR-1002 | `stays_silent_when_the_config_file_enables_private_egress`, `stays_silent_when_the_environment_disables_private_egress`, `load_stays_silent_when_the_config_file_enables_private_egress`, `stays_silent_when_the_environment_disables_gui_mode` (`src/config.rs`); `stays_silent_when_the_same_setting_comes_from_the_config_file` (`tests/cli.rs`) |
 | FR-1003 | `warns_when_the_environment_broadens_shared_paths`, `stays_silent_when_env_shared_paths_stay_within_the_baseline` (`src/config.rs`) |
-| FR-1004 | `provenance_attributes_the_environment_over_the_file`, `provenance_attributes_the_config_file_when_the_environment_is_absent`, `provenance_attributes_the_default_when_neither_sets_it` (`src/config.rs`) |
+| FR-1004 | `attributes_each_widening_warning_to_the_layer_that_set_it` (`src/config.rs`) |
 | FR-1005 | `warns_when_a_widening_setting_comes_from_the_environment` asserts the warning on stderr, the child's line on stdout, and a successful run (`tests/cli.rs`) |
 | NFR-1001 | `environment_overrides_previous_values`, `opens_private_egress_only_when_the_environment_asks_for_it` (`src/config.rs`) — precedence unchanged |
-| NFR-1002 | Review: provenance detection reads the already-parsed table and the returned env flags; no filesystem, network or dependency is added (`Cargo.toml` unchanged) |
+| NFR-1002 | Review: provenance is the `Option` carried by each field of the two in-memory `Layer` values — one deserialised from the config file's single parse, one read from the environment; no filesystem, network or dependency is added (`Cargo.toml` unchanged) |
 
 ## Assumptions
 
@@ -254,3 +254,4 @@ is a breaking product change and therefore out of scope here:
 | --- | --- |
 | 2026-09-12 | Initial draft: warn loudly on env-sourced widening (issue #30, direction 3). Direction 2 (CLI-only flags) recorded under Open questions for the maintainer. |
 | 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#48](https://github.com/leopepe/sandme/pull/48); all tasks are ticked and every Verification test exists. The one open question (direction 2, CLI-only flags) is a non-blocking breaking-change deferral recorded for the maintainer ([#34](https://github.com/leopepe/sandme/issues/34)). |
+| 2026-09-20 | `config.rs`'s internal provenance mechanism (`FileKeys`/`EnvKeys`/`Provenance`/`provenance()`) was restructured to one partial config layer, merged twice (issue #62, finding R3). No requirement changed and `Status` is unchanged. The three `provenance_attributes_*` unit tests FR-1004 cited were replaced by one table-driven test, `attributes_each_widening_warning_to_the_layer_that_set_it`, and the Verification table above is repointed to it. `T-1001`'s implementation-task wording, "parse the config file into a table," describes the original implementation and no longer describes the current one — the file is now parsed once via `toml::from_str::<Layer>`. That task text is left as the historical record of what was done at the time; it is not rewritten, because requirements, not tasks, are the contract. NFR-1002's Verification row, which described provenance as reading "the already-parsed table and the returned env flags", is repointed for the same reason the FR-1004 row was: both the table and the env-flag struct are gone, so the row no longer described how the requirement is met. |

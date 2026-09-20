@@ -1,6 +1,7 @@
 /target
 .pi/
 .plans
+.plan/
 .claude/settings.local.json
 .pi-subagents/
 .claude/worktrees/
