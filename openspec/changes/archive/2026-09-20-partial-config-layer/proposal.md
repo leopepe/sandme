@@ -126,3 +126,25 @@ inconsistent with the other. No file in the security-critical set
   (FR-1701, FR-1702, FR-1705) name unit tests in `src/config.rs`. Every one of those names is
   kept by this change; only the three `provenance_attributes_*` names, cited by SPEC-0010
   FR-1004 alone, are replaced. Verified by re-running this grep in the verification task.
+
+## Archived
+
+Implemented on branch `refactor/62-partial-config-layer` (issue #62, finding R3 of the
+refactoring review of 2026-09-16) across commits `c3477d1` (task 1, characterisation tests),
+`f79ae68` (task 2, the `Layer`/`merge` plumbing), `b89735a` (task 3, the warning rewrite),
+`d31f654` (task 4/5, the module note and SPEC-0010 traceability), `d0df688` (task 6 ticked) and
+`98a3c4c` (a follow-up fix restoring SPEC-0010 traceability and two stale test counts). Not yet
+merged to `main` and no PR opened at archive time. Archived 2026-09-20; all six tasks verified
+against the code before archiving: `grep -rn -E "FileKeys|EnvKeys|Provenance|provenance\("
+src/config.rs` returns no hits on the types themselves (one historical comment mentions the old
+names), the module body is 399 lines with `mod tests` starting at line 401, and
+`docs/specs/0010-warn-env-sourced-widening.md`'s Changelog carries the 2026-09-20 entry
+repointing FR-1004's Verification row to `attributes_each_widening_warning_to_the_layer_that_set_it`.
+
+Checked against: SPEC-0001 FR-009 (precedence — unchanged), SPEC-0010 FR-1001–FR-1005 and
+NFR-1001/NFR-1002 (the widening warnings and their provenance input — same warnings, same
+triggers, rewritten to read the two layers instead of `Provenance`), and SPEC-0017 FR-1705
+(`read_only_paths` as a widening setting — unchanged). No ADR in `docs/adrs/` bears on it. No
+spec delta: `skip_specs: true` in this change's `.openspec.yaml`, since requirements live in
+`docs/specs/` and none changed — only a Verification row and a Changelog line in SPEC-0010 were
+updated, not requirement text or `Status`.
