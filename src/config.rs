@@ -790,6 +790,67 @@ mod tests {
     }
 
     #[test]
+    fn warns_when_the_environment_enables_gui_mode() {
+        // Given gui_mode turned on by the environment alone
+        let config = Config {
+            gui_mode: true,
+            ..Config::default()
+        };
+        let env = EnvKeys {
+            gui_mode: true,
+            ..EnvKeys::default()
+        };
+
+        // When the widening warnings are computed
+        let warnings = widening_warnings(
+            &config,
+            FileKeys::default(),
+            env,
+            &config.shared_paths,
+            &config.read_only_paths,
+        );
+
+        // Then one names both the setting and the variable that carried it
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("gui_mode") && warning.contains("SANDME_GUI_MODE")),
+            "got: {warnings:?}"
+        );
+    }
+
+    #[test]
+    fn stays_silent_when_the_environment_disables_gui_mode() {
+        // Given SANDME_GUI_MODE=0 over a file-set gui_mode = true: the
+        // environment is present (env_set) but its falsey value leaves the
+        // effective config off (FR-1002's falsey-env clause)
+        let config = Config {
+            gui_mode: false,
+            ..Config::default()
+        };
+        let file = FileKeys {
+            gui_mode: true,
+            ..FileKeys::default()
+        };
+        let env = EnvKeys {
+            gui_mode: true,
+            ..EnvKeys::default()
+        };
+
+        // When the widening warnings are computed
+        let warnings = widening_warnings(
+            &config,
+            file,
+            env,
+            &config.shared_paths,
+            &config.read_only_paths,
+        );
+
+        // Then nothing is warned: the effective value is not the widening one
+        assert!(warnings.is_empty(), "got: {warnings:?}");
+    }
+
+    #[test]
     fn warns_when_the_environment_broadens_shared_paths() {
         // Given a baseline confined to a project and an env value reaching "/"
         let baseline = vec!["/home/user/project".to_string()];
@@ -898,6 +959,128 @@ mod tests {
         assert!(loaded.config.allow_private_egress);
         assert!(loaded.warnings.is_empty(), "got: {:?}", loaded.warnings);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn stays_silent_when_the_environment_sets_proxy_or_proxy_port() {
+        // Given an injected home with no config file, and both proxy settings
+        // supplied by the environment. The `SANDME_*` variables are
+        // process-wide; this test owns them (hence `#[serial]`). HOME is
+        // injected by argument, not mutated.
+        let dir = std::env::temp_dir().join("sandme-test-load-silent-proxy");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        unsafe {
+            std::env::remove_var("SANDME_SHARED_PATHS");
+            std::env::remove_var("SANDME_READ_ONLY_PATHS");
+            std::env::remove_var("SANDME_GUI_MODE");
+            std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS");
+            std::env::set_var("SANDME_PROXY", "1");
+            std::env::set_var("SANDME_PROXY_PORT", "9999");
+        }
+
+        // When the configuration is loaded for that home
+        let loaded = load_from(Some(dir.as_path())).unwrap();
+
+        // Then neither setting raises a warning: proxy narrows rather than
+        // widens (src/config.rs:36-44) and proxy_port carries no security
+        // concern (SPEC-0010 Non-goals) — neither carries a provenance bit
+        // today.
+        assert!(loaded.warnings.is_empty(), "got: {:?}", loaded.warnings);
+
+        unsafe {
+            std::env::remove_var("SANDME_PROXY");
+            std::env::remove_var("SANDME_PROXY_PORT");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn load_warns_when_the_environment_broadens_shared_paths_beyond_the_file_baseline() {
+        // Given a config file confining shared_paths to a project directory,
+        // and the environment broadening it to "/". Nothing today exercises
+        // the baseline load_from itself computes: the existing broadening
+        // unit tests take baseline_shared/baseline_read_only in as explicit
+        // arguments and never touch the line that decides what the baseline
+        // *is*. The `SANDME_*` variables are process-wide; this test owns
+        // them (hence `#[serial]`). HOME is injected by argument, not
+        // mutated.
+        let dir = std::env::temp_dir().join("sandme-test-load-warns-shared-paths-baseline");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".sandme")).unwrap();
+        let project = dir.join("project");
+        std::fs::write(
+            dir.join(".sandme/config.toml"),
+            format!("shared_paths = [{:?}]\n", project.to_string_lossy()),
+        )
+        .unwrap();
+        unsafe {
+            std::env::remove_var("SANDME_READ_ONLY_PATHS");
+            std::env::remove_var("SANDME_GUI_MODE");
+            std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS");
+            std::env::remove_var("SANDME_PROXY_PORT");
+            std::env::set_var("SANDME_SHARED_PATHS", "/");
+        }
+
+        // When the configuration is loaded for that home
+        let loaded = load_from(Some(dir.as_path())).unwrap();
+
+        // Then a warning names shared_paths as broadened by the environment
+        // beyond the file-or-default baseline (FR-1003)
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("shared_paths")
+                    && warning.contains("SANDME_SHARED_PATHS")),
+            "got: {:?}",
+            loaded.warnings
+        );
+
+        unsafe {
+            std::env::remove_var("SANDME_SHARED_PATHS");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn load_stays_silent_when_the_environment_value_stays_within_the_file_baseline() {
+        // Given the same file-confined baseline, but the environment value
+        // stays inside it — a subdirectory, not a broader path. The
+        // `SANDME_*` variables are process-wide; this test owns them (hence
+        // `#[serial]`). HOME is injected by argument, not mutated.
+        let dir = std::env::temp_dir().join("sandme-test-load-silent-shared-paths-baseline");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(".sandme")).unwrap();
+        let project = dir.join("project");
+        let subdir = project.join("src");
+        std::fs::write(
+            dir.join(".sandme/config.toml"),
+            format!("shared_paths = [{:?}]\n", project.to_string_lossy()),
+        )
+        .unwrap();
+        unsafe {
+            std::env::remove_var("SANDME_READ_ONLY_PATHS");
+            std::env::remove_var("SANDME_GUI_MODE");
+            std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS");
+            std::env::remove_var("SANDME_PROXY_PORT");
+            std::env::set_var("SANDME_SHARED_PATHS", &subdir);
+        }
+
+        // When the configuration is loaded for that home
+        let loaded = load_from(Some(dir.as_path())).unwrap();
+
+        // Then nothing is warned: the environment narrowed rather than
+        // broadened the file baseline (FR-1003)
+        assert!(loaded.warnings.is_empty(), "got: {:?}", loaded.warnings);
+
+        unsafe {
+            std::env::remove_var("SANDME_SHARED_PATHS");
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
