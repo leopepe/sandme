@@ -1,11 +1,10 @@
 //! Configuration from `~/.sandme/config.toml`, overridden by environment variables.
 //!
-//! This file exceeds the 400-line limit in `docs/guidelines/code/simplicity.md`
-//! §2 and takes that guideline's escape hatch (SPEC-0010). The overage is tests:
-//! the module proper is one cohesive purpose — load the configuration — and its
-//! unit tests sit at its foot, where `docs/guidelines/code/consistency.md` §4
-//! requires them. Splitting either out is the worse alternative the guideline
-//! names.
+//! The file is 1042 lines and takes the escape hatch in
+//! `docs/guidelines/code/simplicity.md` §2, whose limit is 400. The overage is tests
+//! and only tests: the module proper — everything above `#[cfg(test)]` — is 399 lines,
+//! and its unit tests sit at its foot, where `docs/guidelines/code/consistency.md` §4
+//! requires them. Splitting either out is the worse alternative the guideline names.
 
 use std::env;
 use std::path::{Path, PathBuf};

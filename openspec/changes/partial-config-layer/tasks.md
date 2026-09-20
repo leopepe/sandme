@@ -125,7 +125,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       depends-on: 2
       touches: src/config.rs
 
-- [ ] 4. Make the `//!` module note in `src/config.rs` state what is actually true about the
+- [x] 4. Make the `//!` module note in `src/config.rs` state what is actually true about the
       file's size (design.md D8): measure the module body with
       `grep -n "mod tests" src/config.rs`; if the body is under 400 lines, rewrite the note so
       its claim that the overage is tests is accurate; if it is not, rewrite it to name what is
@@ -137,7 +137,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       depends-on: 3
       touches: src/config.rs
 
-- [ ] 5. Keep SPEC-0010 traceable: in `docs/specs/0010-warn-env-sourced-widening.md`, replace the
+- [x] 5. Keep SPEC-0010 traceable: in `docs/specs/0010-warn-env-sourced-widening.md`, replace the
       three `provenance_attributes_*` test names in the FR-1004 Verification row with
       `attributes_each_widening_warning_to_the_layer_that_set_it` (design.md D6), and add a
       Changelog line recording that the provenance mechanism was restructured to a partial
