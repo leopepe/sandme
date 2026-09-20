@@ -150,7 +150,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       depends-on: 3
       touches: docs/specs/0010-warn-env-sourced-widening.md
 
-- [ ] 6. Verification sweep across the whole change, no edits of its own: confirm
+- [x] 6. Verification sweep across the whole change, no edits of its own: confirm
       `git diff --stat tests/cli.rs` is empty (the behavioural contract was not touched);
       re-run `grep -rn "config::tests\|config\.rs" docs/specs/*.md` and confirm every unit-test
       name cited by SPEC-0001 (FR-008), SPEC-0002 (FR-105), SPEC-0003 (FR-205), SPEC-0007
