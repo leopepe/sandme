@@ -17,10 +17,9 @@ use crate::error::SandmeError;
 /// sandme configuration loaded from config file and environment variables.
 ///
 /// Precedence: environment variables override config file values (FR-009).
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone)]
 pub struct Config {
     /// Filesystem paths the sandboxed command may access.
-    #[serde(default = "default_shared_paths")]
     pub shared_paths: Vec<String>,
 
     /// Filesystem paths the sandboxed command may read and execute, but not
@@ -32,7 +31,6 @@ pub struct Config {
     /// expands to the home directory and symlinks are resolved, exactly as for
     /// `shared_paths`. Defaults to empty — no toolchain directory is baked into
     /// the base set (SPEC-0002 minimal-grant thesis).
-    #[serde(default)]
     pub read_only_paths: Vec<String>,
 
     /// Whether to start the egress proxy and route the command through it.
@@ -43,11 +41,9 @@ pub struct Config {
     /// set, and the sandbox grants the command no network egress at all — a
     /// strictly more restrictive result. This narrows access, so it is not a
     /// widening setting and raises no provenance warning.
-    #[serde(default = "default_proxy")]
     pub proxy: bool,
 
     /// Port for the HTTP proxy server.
-    #[serde(default = "default_proxy_port")]
     pub proxy_port: u16,
 
     /// Allow GUI applications to write to their state and scratch directories.
@@ -57,7 +53,6 @@ pub struct Config {
     /// caches and scratch space (SPEC-0002 FR-101, SPEC-0007 FR-702). It does
     /// not open the world-shared `/private/tmp` or all of `/private/var/folders`.
     /// Defaults to `false` to preserve the strict security model.
-    #[serde(default = "default_gui_mode")]
     pub gui_mode: bool,
 
     /// Relay to destinations on the host's own networks (SPEC-0003 FR-205).
@@ -67,7 +62,6 @@ pub struct Config {
     /// — a local model server, a dev API — needs. Defaults to `false`: those
     /// are exactly the destinations the sandbox profile denies the command
     /// directly, and relaying to them turns the proxy into a pivot (issue #15).
-    #[serde(default = "default_allow_private_egress")]
     pub allow_private_egress: bool,
 }
 
@@ -172,74 +166,118 @@ pub fn load() -> Result<Loaded, SandmeError> {
 /// mutating the process `$HOME`. The `SANDME_*` environment overrides are still
 /// read from the process environment — injecting those is out of scope.
 fn load_from(home: Option<&Path>) -> Result<Loaded, SandmeError> {
-    let mut config = Config::default();
-    let mut file = FileKeys::default();
-
     let path = config_path(home);
-    if path.exists() {
+    let file = if path.exists() {
         let content = std::fs::read_to_string(&path).map_err(|source| SandmeError::ConfigRead {
             path: path.clone(),
             source,
         })?;
-        // Parse into a table first to record which keys the file actually set:
-        // serde fills the rest from defaults, so the deserialized struct alone
-        // cannot tell a configured value from a defaulted one (FR-1004).
-        let table: toml::Table =
-            toml::from_str(&content).map_err(|source| SandmeError::ConfigParse { source })?;
-        file = FileKeys::from_table(&table);
-        config = table
-            .try_into()
-            .map_err(|source| SandmeError::ConfigParse { source })?;
-    }
+        toml::from_str::<Layer>(&content).map_err(|source| SandmeError::ConfigParse { source })?
+    } else {
+        Layer::default()
+    };
 
+    let file_merged = Config::default().merge(&file);
     // The shares before the environment is applied are the baseline a broadened
     // `SANDME_SHARED_PATHS`/`SANDME_READ_ONLY_PATHS` is judged against (FR-1003).
-    let baseline_shared = config.shared_paths.clone();
-    let baseline_read_only = config.read_only_paths.clone();
-    let env = apply_env(&mut config);
+    let baseline_shared = file_merged.shared_paths.clone();
+    let baseline_read_only = file_merged.read_only_paths.clone();
+    let env = Layer::from_environment();
+    let config = file_merged.merge(&env);
 
-    let warnings = widening_warnings(&config, file, env, &baseline_shared, &baseline_read_only);
+    let file_keys = FileKeys {
+        shared_paths: file.shared_paths.is_some(),
+        read_only_paths: file.read_only_paths.is_some(),
+        gui_mode: file.gui_mode.is_some(),
+        allow_private_egress: file.allow_private_egress.is_some(),
+    };
+    let env_keys = EnvKeys {
+        shared_paths: env.shared_paths.is_some(),
+        read_only_paths: env.read_only_paths.is_some(),
+        gui_mode: env.gui_mode.is_some(),
+        allow_private_egress: env.allow_private_egress.is_some(),
+    };
+
+    let warnings = widening_warnings(
+        &config,
+        file_keys,
+        env_keys,
+        &baseline_shared,
+        &baseline_read_only,
+    );
     Ok(Loaded { config, warnings })
 }
 
-/// Apply environment-variable overrides; the environment wins (FR-009).
+/// A partial configuration: every field `None` means "this layer said
+/// nothing about this key". Produced once from the config file and once from
+/// the `SANDME_*` environment, then merged onto [`Config::default`] in that
+/// order so the environment wins (FR-009). `Some` is itself the provenance
+/// bit — the fact `FileKeys`/`EnvKeys` used to track separately from the
+/// value now travels with the value.
 ///
-/// Returns which variables were present, so the caller can attribute each
-/// setting's provenance (FR-1004) without re-reading the environment.
-fn apply_env(config: &mut Config) -> EnvKeys {
-    let mut env = EnvKeys::default();
+/// A missing key in an `Option<T>` field deserializes to `None` with no
+/// `#[serde(default)]` needed, so nothing here duplicates a default the way
+/// `Config`'s old `#[serde(default = "…")]` attributes did.
+#[derive(Debug, Default, Deserialize)]
+struct Layer {
+    shared_paths: Option<Vec<String>>,
+    read_only_paths: Option<Vec<String>>,
+    proxy: Option<bool>,
+    proxy_port: Option<u16>,
+    gui_mode: Option<bool>,
+    allow_private_egress: Option<bool>,
+}
 
-    if let Ok(paths) = env::var("SANDME_SHARED_PATHS") {
-        env.shared_paths = true;
-        config.shared_paths = split_list(&paths);
+impl Layer {
+    /// Read the six `SANDME_*` variables from the process environment; the
+    /// environment wins over the file (FR-009). Reuses the same parsing
+    /// helpers (`env_bool`, `split_list`) the config file's layer implicitly
+    /// shares through `toml`'s own string/bool/list handling.
+    fn from_environment() -> Self {
+        Self {
+            shared_paths: env::var("SANDME_SHARED_PATHS").ok().map(|v| split_list(&v)),
+            read_only_paths: env::var("SANDME_READ_ONLY_PATHS")
+                .ok()
+                .map(|v| split_list(&v)),
+            proxy: env::var("SANDME_PROXY").ok().map(|v| env_bool(&v)),
+            proxy_port: env::var("SANDME_PROXY_PORT")
+                .ok()
+                .and_then(|v| v.parse().ok()),
+            gui_mode: env::var("SANDME_GUI_MODE").ok().map(|v| env_bool(&v)),
+            allow_private_egress: env::var("SANDME_ALLOW_PRIVATE_EGRESS")
+                .ok()
+                .map(|v| env_bool(&v)),
+        }
     }
+}
 
-    if let Ok(paths) = env::var("SANDME_READ_ONLY_PATHS") {
-        env.read_only_paths = true;
-        config.read_only_paths = split_list(&paths);
+impl Config {
+    /// Apply a layer onto `self`: each field the layer sets (`Some`)
+    /// overrides the current value; a field it says nothing about (`None`)
+    /// leaves `self` unchanged. This is the only place precedence lives —
+    /// `load_from` calls it once for the file layer, then once more for the
+    /// environment layer, so the second call's `Some`s win (FR-009).
+    fn merge(mut self, layer: &Layer) -> Self {
+        if let Some(shared_paths) = &layer.shared_paths {
+            self.shared_paths.clone_from(shared_paths);
+        }
+        if let Some(read_only_paths) = &layer.read_only_paths {
+            self.read_only_paths.clone_from(read_only_paths);
+        }
+        if let Some(proxy) = layer.proxy {
+            self.proxy = proxy;
+        }
+        if let Some(proxy_port) = layer.proxy_port {
+            self.proxy_port = proxy_port;
+        }
+        if let Some(gui_mode) = layer.gui_mode {
+            self.gui_mode = gui_mode;
+        }
+        if let Some(allow_private_egress) = layer.allow_private_egress {
+            self.allow_private_egress = allow_private_egress;
+        }
+        self
     }
-
-    if let Ok(proxy) = env::var("SANDME_PROXY") {
-        config.proxy = env_bool(&proxy);
-    }
-
-    if let Ok(port) = env::var("SANDME_PROXY_PORT")
-        && let Ok(port) = port.parse::<u16>()
-    {
-        config.proxy_port = port;
-    }
-
-    if let Ok(gui) = env::var("SANDME_GUI_MODE") {
-        env.gui_mode = true;
-        config.gui_mode = env_bool(&gui);
-    }
-
-    if let Ok(allow) = env::var("SANDME_ALLOW_PRIVATE_EGRESS") {
-        env.allow_private_egress = true;
-        config.allow_private_egress = env_bool(&allow);
-    }
-
-    env
 }
 
 /// Split a comma-separated environment list into trimmed, non-empty entries.
@@ -279,18 +317,6 @@ struct FileKeys {
     read_only_paths: bool,
     gui_mode: bool,
     allow_private_egress: bool,
-}
-
-impl FileKeys {
-    /// A key present in the parsed table was set by the user's own config file.
-    fn from_table(table: &toml::Table) -> Self {
-        Self {
-            shared_paths: table.contains_key("shared_paths"),
-            read_only_paths: table.contains_key("read_only_paths"),
-            gui_mode: table.contains_key("gui_mode"),
-            allow_private_egress: table.contains_key("allow_private_egress"),
-        }
-    }
 }
 
 /// Which widening settings an environment variable set this run.
@@ -442,6 +468,28 @@ fn is_within(path: &str, root: &str) -> bool {
 fn normalize(path: &str) -> &str {
     let trimmed = path.trim_end_matches('/');
     if trimmed.is_empty() { "/" } else { trimmed }
+}
+
+/// Test-only compatibility shim over the new `Layer`/`merge` shape.
+///
+/// `load_from` no longer calls this — it merges `Layer::from_environment()`
+/// onto `Config` directly — but four pre-existing tests below still call
+/// `apply_env` as their subject, and task 2 (`partial-config-layer`, 1a) must
+/// not edit a test body. `#[cfg(test)]` keeps it out of the production
+/// binary, so it does not linger as dead code there. It is deleted, and its
+/// four callers rewritten to `Config::default().merge(&Layer::from_environment())`
+/// directly, in the follow-up task that rewrites `widening_warnings` (design.md D6).
+#[cfg(test)]
+fn apply_env(config: &mut Config) -> EnvKeys {
+    let layer = Layer::from_environment();
+    let env = EnvKeys {
+        shared_paths: layer.shared_paths.is_some(),
+        read_only_paths: layer.read_only_paths.is_some(),
+        gui_mode: layer.gui_mode.is_some(),
+        allow_private_egress: layer.allow_private_egress.is_some(),
+    };
+    *config = std::mem::take(config).merge(&layer);
+    env
 }
 
 #[cfg(test)]

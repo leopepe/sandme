@@ -24,7 +24,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
 
 ## Tasks
 
-- [ ] 1. Characterisation tests, written and passed against the code as it stands **before**
+- [x] 1. Characterisation tests, written and passed against the code as it stands **before**
       task 2 changes anything (resolves F2, F3, F7 in
       `.conductor/partial-config-layer/reviews/phase3-contrarian.md`). These assert what
       `src/config.rs` already does today — they are not new behaviour, and every one of them
@@ -61,7 +61,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       depends-on: none
       touches: src/config.rs
 
-- [ ] 2. Task 1a — plumbing only (resolves F8; design.md D1, D3, D4, D5, D9): add `Layer` with
+- [x] 2. Task 1a — plumbing only (resolves F8; design.md D1, D3, D4, D5, D9): add `Layer` with
       all six fields `Option` and `Deserialize` derived; add `Layer::from_environment()` reading
       the six `SANDME_*` variables through the unchanged `env_bool` / `split_list`; add
       `Config::merge(self, &Layer) -> Self`; rebuild `load_from` as `Config::default()`, merge
@@ -71,7 +71,10 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       collapse this into the single chained expression `Config::default().merge(&file).merge(&env)`;
       that discards the intermediate value the baseline is taken from and silently kills the
       `shared_paths`/`read_only_paths` warnings with every test still green); delete the double
-      `toml::Table` parse and `apply_env`; drop `Deserialize` and every
+      `toml::Table` parse, and remove `apply_env` from the production path — a `#[cfg(test)]` shim
+      that delegates to `Layer::from_environment()` and `merge` may remain until task 3 rewrites
+      its four test callers, because deleting the function outright is a compile error in tests
+      this task may not edit; drop `Deserialize` and every
       `#[serde(default = "…")]` from `Config` so `impl Default` is the one definition of each
       default. Do **not** touch `FileKeys`, `EnvKeys`, `Provenance`, `provenance()` or
       `widening_warnings` — keep all five byte-for-byte. Derive the two key-sets from the layers
@@ -79,13 +82,14 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       `FileKeys { shared_paths: file.shared_paths.is_some(), read_only_paths:
       file.read_only_paths.is_some(), gui_mode: file.gui_mode.is_some(), allow_private_egress:
       file.allow_private_egress.is_some() }`, and the equivalent for `EnvKeys` from the env
-      layer. Do not edit any test in this task, including the four characterisation tests added
+      layer. Do not edit any test in this task, including the five characterisation tests added
       in task 1 and the three `provenance_attributes_*` tests.
-      Verify: `grep -rn -E "apply_env|toml::Table" src/config.rs` returns no hits;
+      Verify: `grep -rn "toml::Table" src/config.rs` returns no hits; `apply_env` appears only
+      beneath a `#[cfg(test)]` attribute (its deletion is task 3's, with its four callers);
       `grep -rn -E "FileKeys|EnvKeys|Provenance|provenance\(" src/config.rs` still returns hits
       (unchanged in count from before this task); `git diff` of `src/config.rs`'s `mod tests`
       block is empty — every existing test, including the three `provenance_attributes_*` tests
-      and task 1's four characterisation tests, passes unedited; and the quality gate is green,
+      and task 1's five characterisation tests, passes unedited; and the quality gate is green,
       in order: `cargo fmt`, `cargo clippy --all-targets`, `cargo build`, `cargo test` (see the
       TMPDIR note above; paste what each command printed).
       depends-on: 1
