@@ -53,7 +53,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       `load_from`-level tests: `#[serial_test::serial]`, an injected temp `home` directory
       (never the process's real `HOME`), `unsafe { std::env::set_var / remove_var }` for the
       `SANDME_*` variables this test owns, and directory cleanup at the end.
-      Verify: all four (six, counting the two mirror cases) tests pass against the working tree
+      Verify: all five tests pass against the working tree
       exactly as it stands now — run `cargo test --lib` and paste the output — before task 2
       changes a single line; then the full quality gate, in order: `cargo fmt`,
       `cargo clippy --all-targets`, `cargo build`, `cargo test` (see the TMPDIR note above;
@@ -113,7 +113,7 @@ export TMPDIR=$(getconf DARWIN_USER_TEMP_DIR)
       `opens_private_egress_only_when_the_environment_asks_for_it`) to call
       `Config::default().merge(&Layer::from_environment())`, keeping their names and
       Given/When/Then comments; keep every other test name cited by a spec Verification row
-      verbatim; keep the four characterisation tests added in task 1 — they now exercise the
+      verbatim; keep the five characterisation tests added in task 1 — they now exercise the
       rewritten code path and must keep passing.
       Verify: `grep -rn -E "FileKeys|EnvKeys|Provenance|provenance\(" src/config.rs` returns no
       hits; the characterisation tests from task 1 still pass; the two contract tests

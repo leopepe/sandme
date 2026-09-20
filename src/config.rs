@@ -1,8 +1,8 @@
 //! Configuration from `~/.sandme/config.toml`, overridden by environment variables.
 //!
-//! The file is 1042 lines and takes the escape hatch in
-//! `docs/guidelines/code/simplicity.md` §2, whose limit is 400. The overage is tests
-//! and only tests: the module proper — everything above `#[cfg(test)]` — is 399 lines,
+//! The file is 1042 lines and takes the escape hatch in `docs/guidelines/code/simplicity.md`
+//! §2, whose limit is 400. The overage is tests and only tests — SPEC-0010's warning
+//! verifiers among them: the module proper, everything above `#[cfg(test)]`, is 399 lines,
 //! and its unit tests sit at its foot, where `docs/guidelines/code/consistency.md` §4
 //! requires them. Splitting either out is the worse alternative the guideline names.
 
