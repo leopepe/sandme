@@ -94,12 +94,12 @@ pub fn serve(config: &Config) -> Result<Server, SandmeError> {
 
     // Bind to IPv4 loopback; some HTTP clients (e.g. Zed's reqwest) try
     // IPv6 ::1 first and don't fall back, so we also bind IPv6 loopback.
-    let v4 = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
-        .map_err(&fail)?;
-    v4.set_nonblocking(true).map_err(&fail)?;
-    let addr = v4.local_addr().map_err(&fail)?;
+    let v4 =
+        std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).map_err(fail)?;
+    v4.set_nonblocking(true).map_err(fail)?;
+    let addr = v4.local_addr().map_err(fail)?;
 
-    let v4_listener = TcpListener::from_std(v4).map_err(&fail)?;
+    let v4_listener = TcpListener::from_std(v4).map_err(fail)?;
     let accept_loop = tokio::spawn(run_accept_loop(v4_listener, policy.clone()));
 
     // Bind IPv6 to the port IPv4 actually got, not to `port`: with `port` 0 the

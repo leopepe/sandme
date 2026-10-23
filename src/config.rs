@@ -436,13 +436,13 @@ mod tests {
         // default (the working directory) rather than serde's empty Vec, which
         // is the bug this test guards against
         assert_eq!(config.shared_paths, default_shared_paths());
-        assert!(!config.shared_paths.is_empty());
+        assert_ne!(config.shared_paths, Vec::<String>::new());
         // The default proxy port is now 0 — the OS-chosen ephemeral port that
         // makes parallel runs collision-free (SPEC-0017/FR-1702); it was 8787 before.
         assert_eq!(config.proxy_port, 0);
         // The proxy is on and no read-only paths are granted by default.
         assert!(config.proxy);
-        assert!(config.read_only_paths.is_empty());
+        assert_eq!(config.read_only_paths, Vec::<String>::new());
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -471,7 +471,7 @@ mod tests {
         // silently lost all filesystem access.
         assert_eq!(config.proxy_port, 9000);
         assert_eq!(config.shared_paths, default_shared_paths());
-        assert!(!config.shared_paths.is_empty());
+        assert_ne!(config.shared_paths, Vec::<String>::new());
         assert!(!config.gui_mode);
         assert!(!config.allow_private_egress);
 
