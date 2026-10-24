@@ -1,12 +1,7 @@
-//! HTTP forward proxy mediating the sandboxed command's network egress
-//! (FR-005, SPEC-0003).
-//!
-//! The proxy listens on loopback, relays for the invocation that started it,
-//! and refuses the destinations the sandbox profile denies the command
-//! directly — without it, egress would be routed rather than restricted.
+//! Authenticate and route proxy requests to vetted destinations.
 
 use std::convert::Infallible;
-use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 use http_body_util::{BodyExt, Full, combinators::BoxBody};
@@ -16,60 +11,22 @@ use hyper::header::{
     CONNECTION, HOST, HeaderMap, HeaderName, HeaderValue, PROXY_AUTHENTICATE, PROXY_AUTHORIZATION,
     TE, TRAILER, TRANSFER_ENCODING, UPGRADE,
 };
-use hyper::server::conn::http1;
-use hyper::service::service_fn;
 use hyper::{Method, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use tokio::net::{TcpListener, TcpStream};
-use tokio::task::JoinHandle;
+use tokio::net::TcpStream;
 
-use crate::config::Config;
-use crate::credential::Credential;
-use crate::egress::{self, Destination};
-use crate::error::SandmeError;
+use super::egress::{self, Destination};
 
 /// The body type returned by the proxy.
-type Body = BoxBody<Bytes, hyper::Error>;
-
-/// A running proxy server; stopping is tied to this handle's lifetime.
-///
-/// When the handle is dropped the accept loop is aborted, which is how the
-/// proxy's lifetime follows the sandboxed command's (T-007).
-pub struct Server {
-    addr: SocketAddr,
-    credential: Credential,
-    accept_loop: JoinHandle<()>,
-    accept_loop_v6: Option<JoinHandle<()>>,
-}
-
-impl Server {
-    /// The socket the sandboxed command's egress is routed to.
-    pub fn addr(&self) -> SocketAddr {
-        self.addr
-    }
-
-    /// The proxy URL for the sandboxed command, carrying this run's
-    /// credential — the child needs no configuration of its own (FR-203).
-    pub fn url(&self) -> String {
-        self.credential.proxy_url(self.addr)
-    }
-}
-impl Drop for Server {
-    fn drop(&mut self) {
-        self.accept_loop.abort();
-        if let Some(h) = self.accept_loop_v6.take() {
-            h.abort();
-        }
-    }
-}
+pub(super) type Body = BoxBody<Bytes, hyper::Error>;
 
 /// What the proxy relays, and for whom (SPEC-0003).
 #[derive(Clone)]
-struct Policy {
+pub(super) struct Policy {
     /// The `Proxy-Authorization` header value this run's child will present.
-    expected_authorization: Arc<str>,
+    pub(super) expected_authorization: Arc<str>,
     /// Whether the host's own networks are relayed to at all (FR-205).
-    allow_private_egress: bool,
+    pub(super) allow_private_egress: bool,
 }
 
 impl Policy {
@@ -81,98 +38,15 @@ impl Policy {
     }
 }
 
-/// Start the proxy on the configured port of the loopback interface.
-pub fn serve(config: &Config) -> Result<Server, SandmeError> {
-    let port = config.proxy_port;
-    let fail = |source| SandmeError::ProxyStartup { port, source };
-
-    let credential = Credential::build();
-    let policy = Policy {
-        expected_authorization: Arc::from(credential.expected_authorization().as_str()),
-        allow_private_egress: config.allow_private_egress,
-    };
-
-    // Bind to IPv4 loopback; some HTTP clients (e.g. Zed's reqwest) try
-    // IPv6 ::1 first and don't fall back, so we also bind IPv6 loopback.
-    let v4 =
-        std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).map_err(fail)?;
-    v4.set_nonblocking(true).map_err(fail)?;
-    let addr = v4.local_addr().map_err(fail)?;
-
-    let v4_listener = TcpListener::from_std(v4).map_err(fail)?;
-    let accept_loop = tokio::spawn(run_accept_loop(v4_listener, policy.clone()));
-
-    // Bind IPv6 to the port IPv4 actually got, not to `port`: with `port` 0 the
-    // OS hands the second bind a different ephemeral port, and only `addr` is
-    // published to the child and allowed by the sandbox profile.
-    //
-    // A failed IPv6 bind is warned about, not swallowed: a process squatting
-    // `[::1]:port` would otherwise answer a client that reaches for IPv6 with
-    // no sign to the user. The invocation still runs — the published URL is the
-    // literal IPv4 loopback — so this warns and continues rather than failing
-    // (FR-1105).
-    let accept_loop_v6 = match bind_v6_loopback(addr.port()) {
-        Ok(listener) => Some(tokio::spawn(run_accept_loop(listener, policy))),
-        Err(error) => {
-            eprintln!(
-                "sandme: proxy could not also listen on IPv6 loopback [::1]:{}: {error}; \
-                 continuing on IPv4 loopback only",
-                addr.port()
-            );
-            None
-        }
-    };
-
-    Ok(Server {
-        addr,
-        credential,
-        accept_loop,
-        accept_loop_v6,
-    })
-}
-
-/// Bind the IPv6 loopback listener on `port`, ready for the accept loop.
-///
-/// Separate from the IPv4 bind because its failure is handled differently: the
-/// IPv4 bind fails the invocation, this one only warns (FR-1105).
-fn bind_v6_loopback(port: u16) -> std::io::Result<TcpListener> {
-    let listener = std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, port)))?;
-    listener.set_nonblocking(true)?;
-    TcpListener::from_std(listener)
-}
-
-/// Accept connections until the listener is aborted.
-async fn run_accept_loop(listener: TcpListener, policy: Policy) {
-    loop {
-        match listener.accept().await {
-            Ok((stream, _)) => {
-                tokio::spawn(serve_connection(TokioIo::new(stream), policy.clone()));
-            }
-            Err(error) => {
-                eprintln!("sandme: proxy accept error: {error}");
-                return;
-            }
-        }
-    }
-}
-
-/// Serve one client connection, honouring CONNECT upgrades.
-async fn serve_connection(io: TokioIo<TcpStream>, policy: Policy) {
-    let service = service_fn(move |req| route(req, policy.clone()));
-    let conn = http1::Builder::new()
-        .serve_connection(io, service)
-        .with_upgrades();
-    if let Err(error) = conn.await {
-        eprintln!("sandme: proxy connection error: {error}");
-    }
-}
-
 /// Route one request: refuse it, tunnel it, or forward it.
 ///
 /// The credential is checked before the destination, so a request from
 /// anything but this run's child learns nothing about what the proxy would
 /// have done with it.
-async fn route(req: Request<Incoming>, policy: Policy) -> Result<Response<Body>, Infallible> {
+pub(super) async fn route(
+    req: Request<Incoming>,
+    policy: Policy,
+) -> Result<Response<Body>, Infallible> {
     if !policy.authorizes(&req) {
         return Ok(unauthorized());
     }
@@ -381,33 +255,6 @@ fn response_with(status: StatusCode, message: &str) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn config_on_an_ephemeral_port() -> Config {
-        Config {
-            proxy_port: 0,
-            ..Config::default()
-        }
-    }
-
-    #[tokio::test]
-    async fn serves_both_loopback_families_on_the_published_port() {
-        // Given the proxy started on an ephemeral port
-        let server =
-            serve(&config_on_an_ephemeral_port()).expect("loopback bind on port 0 cannot fail");
-        let port = server.addr().port();
-
-        // Then both loopback families answer on the port the child is told
-        // about — the IPv6 listener is not off on a port of its own
-        assert_ne!(port, 0, "an ephemeral bind resolves to a real port");
-        assert!(
-            std::net::TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok(),
-            "IPv4 loopback should accept on {port}"
-        );
-        assert!(
-            std::net::TcpStream::connect(SocketAddr::from((Ipv6Addr::LOCALHOST, port))).is_ok(),
-            "IPv6 loopback should accept on {port}"
-        );
-    }
 
     #[test]
     fn reads_the_destination_a_request_names() {

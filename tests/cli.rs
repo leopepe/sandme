@@ -413,6 +413,137 @@ fn proxy_lifetime_follows_command() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Keep the binary and sandboxed child alive while their published proxy is probed.
+struct PublishedProxyFixture {
+    child: std::process::Child,
+    dir: PathBuf,
+}
+
+impl PublishedProxyFixture {
+    fn stop(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        // The child waits on inherited stdin; closing it releases the child
+        // without a timer process or a second test-visible endpoint.
+        drop(self.child.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        loop {
+            if let Some(status) = self.child.try_wait()? {
+                return Ok(status);
+            }
+            if std::time::Instant::now() >= deadline {
+                self.child.kill()?;
+                return self.child.wait();
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+    }
+}
+
+impl Drop for PublishedProxyFixture {
+    fn drop(&mut self) {
+        if self.stop().is_err() {
+            let _ = self.child.kill();
+            let _ = self.child.wait();
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+
+fn assert_proxy_challenge_on(address: SocketAddr) {
+    use std::io::{Read, Write};
+
+    let mut stream =
+        std::net::TcpStream::connect_timeout(&address, std::time::Duration::from_secs(2))
+            .unwrap_or_else(|error| panic!("{address} did not accept a connection: {error}"));
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .set_write_timeout(Some(std::time::Duration::from_secs(2)))
+        .unwrap();
+    stream
+        .write_all(
+            b"GET http://example.com/ HTTP/1.1\r\nHost: example.com\r\nConnection: close\r\n\r\n",
+        )
+        .unwrap();
+    let mut response = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    while !response.windows(4).any(|bytes| bytes == b"\r\n\r\n") {
+        let n = stream.read(&mut chunk).unwrap();
+        assert_ne!(n, 0, "{address} closed before the HTTP headers arrived");
+        response.extend_from_slice(&chunk[..n]);
+        assert!(response.len() < 8192, "{address} sent oversized headers");
+    }
+    let response = String::from_utf8(response).unwrap();
+    assert!(
+        response.starts_with("HTTP/1.1 407 "),
+        "{address}: {response:?}"
+    );
+    assert!(
+        response
+            .to_ascii_lowercase()
+            .contains("proxy-authenticate: basic realm=\"sandme\"\r\n"),
+        "{address} did not send the Basic challenge: {response:?}"
+    );
+}
+
+#[test]
+fn serves_both_loopback_families_on_the_published_port() {
+    // Given a real sandme invocation whose sandboxed child publishes only
+    // the address after @ (never the invocation's proxy URL credential)
+    let dir = workdir("serves-both-loopback-families-on-the-published-port");
+    let mut cmd = sandme(&dir);
+    cmd.stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .arg(
+            "case \"$HTTP_PROXY\" in *@*) printf '%s\\n' \"${HTTP_PROXY##*@}\" > published-address ;; *) exit 1 ;; esac; read _; exit 0",
+        );
+    let child = cmd.spawn().unwrap_or_else(|error| {
+        let cleanup = std::fs::remove_dir_all(&dir);
+        panic!("could not spawn sandme: {error}; cleanup: {cleanup:?}");
+    });
+    let mut fixture = PublishedProxyFixture {
+        child,
+        dir: dir.clone(),
+    };
+
+    // When the child has published the actual ephemeral address
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let published = loop {
+        match std::fs::read_to_string(dir.join("published-address")) {
+            Ok(published) if published.ends_with('\n') => break published,
+            Ok(_) => {} // The child may have opened the file but not finished writing yet.
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => panic!("failed to read published address: {error}"),
+        }
+        assert!(
+            fixture.child.try_wait().unwrap().is_none(),
+            "sandme exited before the child published its address"
+        );
+        assert!(
+            std::time::Instant::now() < deadline,
+            "address publication timed out"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    };
+    let published: SocketAddr = published.trim().parse().unwrap();
+    assert_eq!(published.ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
+    let port = published.port();
+
+    // Then the nonzero published port accepts both address families and each
+    // listener answers an unauthenticated request with the same 407 challenge
+    assert_ne!(port, 0, "an ephemeral bind resolves to a real port");
+    for address in [Ipv4Addr::LOCALHOST.into(), Ipv6Addr::LOCALHOST.into()] {
+        assert_proxy_challenge_on(SocketAddr::new(address, port));
+    }
+    assert!(
+        fixture.stop().unwrap().success(),
+        "sandme did not exit successfully"
+    );
+    drop(fixture);
+    assert!(!dir.exists(), "the fixture work directory must be removed");
+}
+
 /// Start sandme on a port this test can probe, and return once its proxy
 /// answers there.
 ///

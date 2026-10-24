@@ -4,7 +4,6 @@
 
 mod config;
 mod credential;
-mod egress;
 mod error;
 mod executable;
 mod proxy;

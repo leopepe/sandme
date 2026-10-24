@@ -12,7 +12,7 @@ Read the original `.plan/proxy-tunnel-module-refactor-handoff-2026-10-23/` logs 
 
 ## 2. Proxy extraction — T-1802
 
-- [ ] 2. Extract the proxy boundary and move its tests without changing the request path (SPEC-0018 FR-1801, FR-1802, NFR-1801, NFR-1802, T-1802; ADR-0001 D1–D5); verify pre-move binary listener characterization, selected proxy/CLI cases with nonzero executed-test counts, security-chain inspection and the full gate before the local task commit.
+- [x] 2. Extract the proxy boundary and move its tests without changing the request path (SPEC-0018 FR-1801, FR-1802, NFR-1801, NFR-1802, T-1802; ADR-0001 D1–D5); verify pre-move binary listener characterization, selected proxy/CLI cases with nonzero executed-test counts, security-chain inspection and the full gate before the local task commit.
   depends-on: 1
   touches: src/main.rs, src/proxy.rs, src/egress.rs, src/proxy/mod.rs, src/proxy/server.rs, src/proxy/request.rs, src/proxy/egress.rs, tests/cli.rs
 
