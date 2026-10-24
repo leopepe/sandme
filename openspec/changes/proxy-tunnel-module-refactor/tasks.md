@@ -20,7 +20,7 @@ Record the flat-file/absent-directory starting structure. Before removing the un
 
 ## 3. Tunnel extraction — T-1803
 
-- [ ] 3. Extract the SSH CONNECT client with unchanged command and runner contracts (SPEC-0018 FR-1801, FR-1802, NFR-1801, NFR-1802, T-1803; ADR-0001 D1, D2, D5); verify both real-binary failure characterizations pass before relocation, selected SSH cases execute nonzero tests and pass afterward, and the full gate before the local task commit.
+- [x] 3. Extract the SSH CONNECT client with unchanged command and runner contracts (SPEC-0018 FR-1801, FR-1802, NFR-1801, NFR-1802, T-1803; ADR-0001 D1, D2, D5); verify both real-binary failure characterizations pass before relocation, selected SSH cases execute nonzero tests and pass afterward, and the full gate before the local task commit.
   depends-on: 2
   touches: src/tunnel.rs, src/tunnel/mod.rs, src/tunnel/client.rs, tests/tunnel.rs
 

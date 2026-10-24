@@ -282,7 +282,7 @@ unchanged `proxy::serve`, `proxy::Server::addr` and `proxy::Server::url` interfa
 
 ### T-1803 — Extract the SSH CONNECT client
 
-- [ ] 3. Implement the tunnel facade while keeping the command/runner contract together (FR-1801, FR-1802, NFR-1801, NFR-1802).
+- [x] 3. Implement the tunnel facade while keeping the command/runner contract together (FR-1801, FR-1802, NFR-1801, NFR-1802).
   depends-on: 2
   touches: src/tunnel.rs, src/tunnel/mod.rs, src/tunnel/client.rs, tests/tunnel.rs
 
@@ -359,3 +359,4 @@ completion/blocked report. The integration owner alone updates canonical task/st
 | 2026-10-23 | Owner approved adding `CONTRIBUTING.md` and `.github/pull_request_template.md` to T-1804 for proxy/tunnel review-pointer updates only, preserving all other review coverage; no requirement or runtime change. |
 | 2026-10-23 | T-1801: repaired only the seven specified lint findings and froze a warning-free macOS baseline, preserved test inventories, and release startup samples. Proxy/tunnel relocation, required reviews and Linux verification remain pending; Status stays Accepted. |
 | 2026-10-24 | T-1802: extracted the proxy boundary with unchanged function bodies, preserved all test leaves, and verified the real-binary same-port IPv4/IPv6 407/Basic characterization before relocation. Worker and parent full gates passed; tunnel extraction, active-pointer updates, required reviews and Linux verification remain pending. Status stays Accepted. |
+| 2026-10-24 | T-1803: moved the SSH CONNECT implementation byte-for-byte behind its declarative facade; both named real-binary failure tests passed before relocation, including 403 and 407 exchanges. Preserved all existing leaves and added the two planned cases; worker final and parent gates passed without warnings. Active-pointer updates, required reviews and Linux verification remain pending; Status stays Accepted. |
