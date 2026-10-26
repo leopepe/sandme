@@ -1303,7 +1303,27 @@ fn refuses_to_relay_to_the_cloud_metadata_address() {
     // Then the proxy answers 403, and answers it without having tried to
     // connect — a connection attempt to a link-local address hangs until it
     // times out, so a prompt answer is the observable form of NFR-202
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "403");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "403",
+        "child status={}, elapsed={elapsed:?}, stderr={:?}",
+        output.status,
+        {
+            let stderr = &output.stderr;
+            let markers: [&[u8]; 3] = [b"authorization", b"basic ", b"bearer "];
+            if stderr.contains(&b'@')
+                || markers.iter().any(|marker| {
+                    stderr
+                        .windows(marker.len())
+                        .any(|bytes| bytes.eq_ignore_ascii_case(marker))
+                })
+            {
+                "[redacted]".to_owned()
+            } else {
+                String::from_utf8_lossy(&stderr[..stderr.len().min(4096)]).into_owned()
+            }
+        }
+    );
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "the refusal should precede any connection attempt; took {elapsed:?}"
