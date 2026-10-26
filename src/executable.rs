@@ -10,6 +10,7 @@ use crate::error::SandmeError;
 /// environment, so sandme's `PATH` is the child's. Canonicalizing the name
 /// directly resolves it against sandme's working directory instead and finds
 /// nothing (issue #13).
+#[cfg(any(target_os = "macos", test))]
 pub fn locate(program: &str) -> Option<PathBuf> {
     candidates(program)
         .into_iter()

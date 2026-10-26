@@ -136,7 +136,7 @@ mod backend {
     /// `no_new_privs` is what stops the confined child from regaining
     /// privileges through a setuid/setgid exec; without it a fully-enforced FS
     /// ruleset could still be shed. Requiring both is cheap defense-in-depth —
-    /// any state short of "fully enforced with no_new_privs" returns `EPERM`, so
+    /// any state short of "fully enforced with `no_new_privs`" returns `EPERM`, so
     /// the command never execs anything less than fully confined.
     fn enforce(ruleset: RulesetCreated) -> io::Result<()> {
         let status = ruleset
@@ -190,7 +190,7 @@ mod backend {
     /// the crate refuses to silently downgrade on an old kernel
     /// (SPEC-0016/FR-1603).
     fn create_ruleset(access: &AccessPlan) -> Result<RulesetCreated, SandmeError> {
-        let created = base_ruleset().map_err(rule_error)?;
+        let created = base_ruleset().map_err(|error| rule_error(&error))?;
         // Read-only: config, certs and the random devices a command reads but
         // never executes. Read+execute: the enumerated system dirs and the
         // shell. Read+write: shared paths, the PTY devices and (under GUI mode)
@@ -269,7 +269,7 @@ mod backend {
             }
             created = created
                 .add_rule(PathBeneath::new(fd, effective))
-                .map_err(rule_error)?;
+                .map_err(|error| rule_error(&error))?;
         }
         Ok(created)
     }
@@ -282,14 +282,14 @@ mod backend {
         for &port in ports {
             created = created
                 .add_rule(NetPort::new(port, AccessNet::ConnectTcp))
-                .map_err(rule_error)?;
+                .map_err(|error| rule_error(&error))?;
         }
         Ok(created)
     }
 
     /// Map a `landlock` ruleset-construction failure to sandme's fail-shut error:
     /// if the ruleset cannot be built, the command must not run.
-    fn rule_error(error: RulesetError) -> SandmeError {
+    fn rule_error(error: &RulesetError) -> SandmeError {
         SandmeError::SandboxNotEnforced {
             reason: format!("the Landlock ruleset could not be built: {error}"),
         }
