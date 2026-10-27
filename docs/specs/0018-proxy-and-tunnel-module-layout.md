@@ -4,7 +4,7 @@
 
 - **Status**: Accepted
 - **Created**: 2026-10-22
-- **Updated**: 2026-10-23
+- **Updated**: 2026-10-27
 - **Related ADRs**: ADR-0001 (`docs/adrs/0001-proxy-and-tunnel-module-boundaries.md`)
 - **Related specs**: SPEC-0001, SPEC-0003, SPEC-0011, SPEC-0012, SPEC-0014 (preserves); SPEC-0015 and SPEC-0017 (shipped-source context only; both currently Draft)
 
@@ -31,13 +31,15 @@ cannot inspect either component's interface independently of its executable impl
 
 ## Non-goals
 
-- New proxy protocols, modes, configuration, flags, status codes or diagnostics.
+- New proxy protocols, modes, configuration, flags, status codes or production diagnostics.
 - Rewriting authentication, entropy fallback, DNS resolution, header handling or relay behavior.
 - New traits, wrappers, policy/codec frameworks, dependencies, production targets or CI infrastructure.
 - Moving the shared credential module or changing configuration/error ownership.
-- Moving child environment wiring or modifying any sandbox implementation.
+- Moving child environment wiring or modifying sandbox implementation, apart from the separately
+  owner-approved warning-only prerequisite in T-1804; it may not change sandbox behavior.
 - Converting existing sandbox `mod.rs` files to facades.
-- Reconciling legacy Draft spec statuses or fixing unrelated findings discovered during review.
+- Reconciling legacy Draft spec statuses or fixing unrelated findings discovered during review,
+  apart from the explicitly owner-approved warning and test-diagnostic checkpoints in T-1804.
 - Performance optimization or a new startup-latency budget.
 
 ## User scenarios *(mandatory)*
@@ -312,13 +314,35 @@ Interface contract. No changes to `main` or `sandbox` callers are needed.
 
 ### T-1804 — Reconnect traceability and verify the whole change
 
-- [ ] 4. Update active pointers, perform the required reviews, and record complete verification (FR-1801, FR-1802, FR-1803, NFR-1801, NFR-1802).
+- [x] 4. Update active pointers, perform the required reviews, and record complete verification (FR-1801, FR-1802, FR-1803, NFR-1801, NFR-1802).
   depends-on: 2, 3
-  touches: AGENTS.md, src/AGENTS.md, openspec/config.yaml, .agents/skills/security-audit/SKILL.md, docs/specs/0003-proxy-egress-restrictions.md, docs/specs/0011-proxy-hardening-follow-ups.md, docs/specs/0012-ssh-connect-tunnel.md, docs/specs/0018-proxy-and-tunnel-module-layout.md, CONTRIBUTING.md, .github/pull_request_template.md
+  touches: AGENTS.md, src/AGENTS.md, openspec/config.yaml, .agents/skills/security-audit/SKILL.md, docs/specs/0003-proxy-egress-restrictions.md, docs/specs/0011-proxy-hardening-follow-ups.md, docs/specs/0012-ssh-connect-tunnel.md, docs/specs/0018-proxy-and-tunnel-module-layout.md, CONTRIBUTING.md, .github/pull_request_template.md, src/error.rs, src/executable.rs, src/sandbox/landlock/mod.rs, src/main.rs, tests/cli.rs
 
 **Interfaces:** consumes the stable facades and all test evidence from tasks 1–3; produces
 resolved active verification references, unchanged security-review coverage and an honest
 completion/blocked report. The integration owner alone updates canonical task/status records.
+
+**Owner-approved warning-only prerequisite (NFR-1801 / §9):** resolve only the
+four Linux warning sites in `src/error.rs` (`UnsafeProfilePath`), `src/executable.rs`
+(`locate`), and `src/sandbox/landlock/mod.rs` (documentation backticks and borrowed error
+formatting). `src/main.rs::failure_code` is the required companion for the platform-gated
+error variant; preserve status 125 and every other mapping. These four source files are the
+warning-only exception to the refactor's source-preservation exclusions. Preserve error text, policy,
+ABI/enforcement, startup/dispatch, interfaces and assertions; add no lint suppression. Run the
+full gate and applicable independent reviews before the separately approved lint-only commit
+and push to the existing CI draft. The integration task remains open until all obligations pass.
+
+**Owner-approved diagnostic checkpoints (NFR-1801 / §9):** native macOS runs reported
+`000` instead of `403` in the metadata and then benchmarking refusal cases. Add shared,
+failure-only exit status, elapsed time and bounded, redacted stderr to the existing
+metadata, CGNAT and benchmarking cases in `tests/cli.rs`, with one private test-only
+formatting helper in that file. Preserve every `403` and `< 5 seconds` assertion,
+current curl arguments, capture/cleanup sequence, leaf name and all other test bodies.
+Keep formatting lazy on assertion failure and retain the metadata diagnostic bound and
+redaction behavior. This is not a production fix or a waiver of either failed gate. Run the full local gate and
+required scoped review before the separately approved test-only commit and one push to
+the existing CI draft. Do not add retries, skip the case, accept `000`, alter proxy
+environment/policy or claim the cause was fixed when a later run merely passes.
 
 1. Repoint source-location references in the older specs' **Verification** tables: egress tests
    to `src/proxy/egress.rs`; destination parsing to `src/proxy/request.rs`; command builder and
@@ -334,8 +358,10 @@ completion/blocked report. The integration owner alone updates canonical task/st
 3. Verify both facades against ADR-0001 D2, confirm the three obsolete flat files are gone,
    audit each active pointer and test name, and compare test inventories by leaf name/behavior.
    The moved listener test changes unit/integration location, not coverage. Extra tests from
-   task 3 are expected. Confirm no edits to `src/credential.rs`, `src/error.rs`, sandbox sources,
-   `Cargo.toml` or `Cargo.lock`. Run the full gate on the integrated snapshot, including docs.
+   task 3 are expected. Confirm no edits to `src/credential.rs`, `Cargo.toml` or `Cargo.lock`;
+   error, executable, sandbox and main changes are limited to the warning-only exception above;
+   test changes after T-1803 are limited to the shared three-case diagnostic exception above.
+   Run the full gate on the integrated snapshot, including docs.
 4. With a clean gate, run `/review-standards`, `/security-audit`, `architecture-review`,
    `spec-review` and `performance-review` as required by the repository's review table.
    Supply the new paths explicitly so a stale filename cannot exclude moved code. Performance
@@ -346,9 +372,25 @@ completion/blocked report. The integration owner alone updates canonical task/st
    command/toolchain/kernel evidence. macOS success, cross-compilation or platform-neutral plan
    tests do not prove Linux kernel enforcement. If unavailable, retain the gap and request
    maintainer disposition; do not report both platforms verified or silently mark this task done.
-   Once every required verification and review is satisfied, tick the canonical tasks, update
-   this spec to Implemented with a Changelog row, and let Conductor archive its working change
-   without overwriting the canonical requirement record. No PR/push/release is authorized here.
+   Once the change-specific verification and required project reports are satisfied, the
+   integration owner records their scoped disposition and ticks the Apply tasks. Keep this
+   spec Accepted while Conductor's formal adversarial review, integrated Verify and Archive
+   remain pending; project reports do not replace those cycle-level gates. Only after those
+   review/verification gates may final Archive bookkeeping set Implemented and add its
+   Changelog row, without overwriting the canonical requirement record. No PR/push/release
+   is authorized here.
+
+**Apply closure — 2026-10-27:** The owner accepted the refactor-scoped disposition and
+local documentation checkpoint. G16's structural/reference/manifest evidence is recorded;
+G17's native Linux execution is present. CI [40474050827](https://github.com/leopepe/sandme/actions/runs/40474050827)
+tested source commit `bec9454`: macOS 142 passes plus one documented fixture, Linux x86_64
+and aarch64 95 passes each, and warning-free Cargo gates including fmt/docs. The job-linked
+Linux image inventory is kernel-version evidence, not a newly executed uname or numeric ABI
+probe. Required project reports and scoped follow-ups are consumed with their limits; the
+raw repository-wide spec BLOCK and pre-existing C1–C10/G1–G15 debt remain open outside this
+refactor's fixes, not waived or relabelled passed. Startup observations retain their ordering
+and unmeasured-dimension qualifications; earlier CI failures retain their unknown causes.
+All Apply tasks are complete, but Status remains Accepted pending formal Conductor Phases 5–7.
 
 ## Changelog
 
@@ -360,3 +402,7 @@ completion/blocked report. The integration owner alone updates canonical task/st
 | 2026-10-23 | T-1801: repaired only the seven specified lint findings and froze a warning-free macOS baseline, preserved test inventories, and release startup samples. Proxy/tunnel relocation, required reviews and Linux verification remain pending; Status stays Accepted. |
 | 2026-10-24 | T-1802: extracted the proxy boundary with unchanged function bodies, preserved all test leaves, and verified the real-binary same-port IPv4/IPv6 407/Basic characterization before relocation. Worker and parent full gates passed; tunnel extraction, active-pointer updates, required reviews and Linux verification remain pending. Status stays Accepted. |
 | 2026-10-24 | T-1803: moved the SSH CONNECT implementation byte-for-byte behind its declarative facade; both named real-binary failure tests passed before relocation, including 403 and 407 exchanges. Preserved all existing leaves and added the two planned cases; worker final and parent gates passed without warnings. Active-pointer updates, required reviews and Linux verification remain pending; Status stays Accepted. |
+| 2026-10-26 | Recorded the owner's approval to fix the four reproduced Linux warning sites and update the existing CI draft. Recorded the warning-only T-1804 exception and its required main status-arm companion; no requirement, runtime contract, assertion or Status change. The three-file diagnostic count is not the complete four-file repair footprint. Implementation and warning-free CI remain pending. |
+| 2026-10-26 | Owner approved failure-only metadata-test diagnostics and one existing-draft CI push after read-only macOS investigation. Preserve exact `403` and `< 5 seconds` assertions; no production, requirement, interface, Status or completion change. The original CI failure remains recorded; diagnostic implementation and new CI are pending. |
+| 2026-10-27 | Owner approved shared failure diagnostics for metadata, CGNAT and benchmarking denial cases and one further existing-draft CI checkpoint. The builder selected one private test-only formatter. Preserve all predicates, arguments and runtime behavior; no requirement/interface/Status/completion change. Both original native macOS failures remain recorded. |
+| 2026-10-27 | T-1804 Apply closure approved: active-pointer updates, preserved interfaces/assertions/dependency surface, required project reports and qualified structural/native-platform evidence are recorded. All four Apply tasks are complete; legacy spec debt and historical failures remain open/preserved. This is a local-only documentation checkpoint, not final review, Archive, merge or release; Status stays Accepted pending formal Conductor Phases 5–7. |

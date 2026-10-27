@@ -71,7 +71,7 @@ run the gate before each commit, not once at the end.
 
 ## Security-relevant changes
 
-Some files *are* the sandbox: `src/profile.rs`, `src/proxy.rs`, `src/egress.rs` and
+Some files *are* the sandbox: `src/profile.rs`, `src/proxy/`, `src/tunnel/` and
 `src/sandbox.rs`. A change to any of them gets a narrower review before the pull request opens.
 The table under **Reviewing** in `AGENTS.md` lists which review each kind of change triggers and
 why. Nothing automates it — the table is the trigger.

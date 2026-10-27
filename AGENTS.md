@@ -69,7 +69,7 @@ change is still cheap to alter:
 
 | The change touches | Also run | Why this one |
 | --- | --- | --- |
-| `src/sandbox/seatbelt/profile.rs` (the Seatbelt profile), `src/sandbox/landlock/` (the Landlock ruleset), `src/proxy.rs` or `src/egress.rs` (egress), or `src/sandbox/mod.rs` (what the child is launched as) | `/security-audit` | These files *are* the sandbox. A profile rule in the wrong order, a ruleset granting a path or port it should not, a proxy that forwards further than the sandbox allows, or the wrong program being the one that gets launched, is the product failing while every test stays green. |
+| `src/sandbox/seatbelt/profile.rs` (the Seatbelt profile), `src/sandbox/landlock/` (the Landlock ruleset), `src/proxy/` (egress), `src/tunnel/` (SSH transport), or `src/sandbox/mod.rs` (what the child is launched as) | `/security-audit` | These files *are* the sandbox. A profile rule in the wrong order, a ruleset granting a path or port it should not, a proxy that forwards further than the sandbox allows, or the wrong program being the one that gets launched, is the product failing while every test stays green. |
 | `docs/specs/` — a new spec, a delta, or a `Status` change | `spec-review` agent | Finds specs that contradict each other, requirements nothing implements, and behaviour no requirement covers. |
 | Module boundaries — a new module, a moved responsibility, a new trait or layer | `architecture-review` agent | Checks the change against accepted ADRs in `docs/adrs/` and against what each module is for. |
 | The startup path, async code, or anything with an `NFR-` budget | `performance-review` agent | Produces measurements. A performance claim with no numbers behind it is not a result. |
