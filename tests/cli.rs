@@ -51,6 +51,26 @@ fn sandme_at(home: &Path, cwd: &Path) -> Command {
     cmd
 }
 
+fn denial_failure_context(output: &std::process::Output, elapsed: std::time::Duration) -> String {
+    let stderr = &output.stderr;
+    let markers: [&[u8]; 3] = [b"authorization", b"basic ", b"bearer "];
+    // Inspect the whole buffer before truncation so later markers still redact it.
+    let stderr = if stderr.contains(&b'@')
+        || markers.iter().any(|marker| {
+            stderr
+                .windows(marker.len())
+                .any(|bytes| bytes.eq_ignore_ascii_case(marker))
+        }) {
+        "[redacted]".to_owned()
+    } else {
+        String::from_utf8_lossy(&stderr[..stderr.len().min(4096)]).into_owned()
+    };
+    format!(
+        "child status={}, elapsed={elapsed:?}, stderr={stderr:?}",
+        output.status
+    )
+}
+
 #[test]
 fn prints_child_output() {
     // Given sandme and a command that prints a marker
@@ -1306,23 +1326,8 @@ fn refuses_to_relay_to_the_cloud_metadata_address() {
     assert_eq!(
         String::from_utf8_lossy(&output.stdout).trim(),
         "403",
-        "child status={}, elapsed={elapsed:?}, stderr={:?}",
-        output.status,
-        {
-            let stderr = &output.stderr;
-            let markers: [&[u8]; 3] = [b"authorization", b"basic ", b"bearer "];
-            if stderr.contains(&b'@')
-                || markers.iter().any(|marker| {
-                    stderr
-                        .windows(marker.len())
-                        .any(|bytes| bytes.eq_ignore_ascii_case(marker))
-                })
-            {
-                "[redacted]".to_owned()
-            } else {
-                String::from_utf8_lossy(&stderr[..stderr.len().min(4096)]).into_owned()
-            }
-        }
+        "{}",
+        denial_failure_context(&output, elapsed)
     );
     assert!(
         elapsed < std::time::Duration::from_secs(5),
@@ -1474,7 +1479,12 @@ fn refuses_to_relay_to_a_cgnat_destination_by_default() {
 
     // Then the proxy answers 403 without having tried to connect — a prompt
     // answer is the observable form of "no connection attempt" (FR-1104)
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "403");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "403",
+        "{}",
+        denial_failure_context(&output, elapsed)
+    );
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "the refusal should precede any connection attempt; took {elapsed:?}"
@@ -1506,7 +1516,12 @@ fn refuses_to_relay_to_a_benchmarking_destination_by_default() {
     let elapsed = started.elapsed();
 
     // Then the proxy answers 403 before any connection attempt (FR-1104)
-    assert_eq!(String::from_utf8_lossy(&output.stdout).trim(), "403");
+    assert_eq!(
+        String::from_utf8_lossy(&output.stdout).trim(),
+        "403",
+        "{}",
+        denial_failure_context(&output, elapsed)
+    );
     assert!(
         elapsed < std::time::Duration::from_secs(5),
         "the refusal should precede any connection attempt; took {elapsed:?}"
