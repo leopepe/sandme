@@ -18,10 +18,24 @@ struct HelperScratch(PathBuf);
 
 impl HelperScratch {
     fn new(case: &str) -> Self {
-        let path =
+        let base =
             std::env::temp_dir().join(format!("sandme-tunnel-{}-{case}", std::process::id()));
-        fs::create_dir(&path).expect("create isolated helper output directory");
-        Self(path)
+        for candidate in 0..32 {
+            let path = if candidate == 0 {
+                base.clone()
+            } else {
+                base.with_file_name(format!(
+                    "sandme-tunnel-{}-{case}-{candidate}",
+                    std::process::id()
+                ))
+            };
+            match fs::create_dir(&path) {
+                Ok(()) => return Self(path),
+                Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+                Err(error) => panic!("create isolated helper output directory: {error}"),
+            }
+        }
+        panic!("exhausted isolated helper output directory candidates for {case}")
     }
 }
 
@@ -228,4 +242,40 @@ fn reports_a_refused_ssh_connect_with_the_reserved_status() {
             String::from_utf8_lossy(&output.stderr)
         );
     }
+}
+
+#[test]
+fn separate_ssh_capture_preserves_an_existing_owners_output() {
+    // Given two previous owners' capture directories for this case
+    let case = "occupied-capture";
+    let prior_owner = HelperScratch::new(case);
+    let prior_marker = prior_owner.0.join("stdout");
+    fs::write(&prior_marker, b"prior owner's output").unwrap();
+    let old_owner = HelperScratch::new(case);
+    let old_path = old_owner.0.clone();
+    let marker = old_path.join("stdout");
+    fs::write(&marker, b"previous owner's output").unwrap();
+
+    // When a separate capture is reserved and the real SSH helper runs without a proxy
+    let fresh_owner = HelperScratch::new(case);
+    assert_ne!(fresh_owner.0, old_owner.0);
+    assert_eq!(fs::read(&prior_marker).unwrap(), b"prior owner's output");
+    assert_eq!(fs::read(&marker).unwrap(), b"previous owner's output");
+    let output = run_ssh_helper(case, None);
+    assert_eq!(fs::read(&prior_marker).unwrap(), b"prior owner's output");
+    assert_eq!(fs::read(&marker).unwrap(), b"previous owner's output");
+    let fresh_path = fresh_owner.0.clone();
+    drop(fresh_owner);
+
+    // Then the binary reports its own failure, only the fresh capture is cleaned up,
+    // and the previous owner's output remains unchanged throughout
+    assert_eq!(output.status.code(), Some(125));
+    assert_eq!(output.stdout, Vec::<u8>::new());
+    assert!(
+        String::from_utf8_lossy(&output.stderr)
+            .contains("sandme: SSH tunnel: no usable HTTP_PROXY in the environment")
+    );
+    assert!(!fresh_path.exists());
+    assert_eq!(fs::read(&prior_marker).unwrap(), b"prior owner's output");
+    assert_eq!(fs::read(&marker).unwrap(), b"previous owner's output");
 }
