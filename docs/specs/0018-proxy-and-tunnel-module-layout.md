@@ -2,9 +2,9 @@
 
 ## Metadata
 
-- **Status**: Accepted
+- **Status**: Implemented
 - **Created**: 2026-10-22
-- **Updated**: 2026-10-27
+- **Updated**: 2026-10-28
 - **Related ADRs**: ADR-0001 (`docs/adrs/0001-proxy-and-tunnel-module-boundaries.md`)
 - **Related specs**: SPEC-0001, SPEC-0003, SPEC-0011, SPEC-0012, SPEC-0014 (preserves); SPEC-0015 and SPEC-0017 (shipped-source context only; both currently Draft)
 
@@ -406,3 +406,4 @@ All Apply tasks are complete, but Status remains Accepted pending formal Conduct
 | 2026-10-26 | Owner approved failure-only metadata-test diagnostics and one existing-draft CI push after read-only macOS investigation. Preserve exact `403` and `< 5 seconds` assertions; no production, requirement, interface, Status or completion change. The original CI failure remains recorded; diagnostic implementation and new CI are pending. |
 | 2026-10-27 | Owner approved shared failure diagnostics for metadata, CGNAT and benchmarking denial cases and one further existing-draft CI checkpoint. The builder selected one private test-only formatter. Preserve all predicates, arguments and runtime behavior; no requirement/interface/Status/completion change. Both original native macOS failures remain recorded. |
 | 2026-10-27 | T-1804 Apply closure approved: active-pointer updates, preserved interfaces/assertions/dependency surface, required project reports and qualified structural/native-platform evidence are recorded. All four Apply tasks are complete; legacy spec debt and historical failures remain open/preserved. This is a local-only documentation checkpoint, not final review, Archive, merge or release; Status stays Accepted pending formal Conductor Phases 5–7. |
+| 2026-10-28 | Owner approved Phase 7 Archive after completed formal Phase 5/F1 and scoped Phase 6 Verify: FR-1801–FR-1803 and NFR-1801–NFR-1802 are implemented and verified; all four tasks remain complete. Set Status to Implemented without changing requirements or interfaces. Retain W1: current-tree/new F1 fixture native-matrix CI is unrun; published-source Linux evidence is qualified, not current-tree certification. Legacy spec debt, raw reports, historical failures and timing/kernel/proof limits remain preserved. Archive is local bookkeeping, not commit, push, merge or release authorization. |
