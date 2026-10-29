@@ -98,10 +98,6 @@ without breaking everyone who fetched it, and a published release cannot be reca
 <!-- graft:start -->
 ## Graft — repo context graph
 
-> **Optional local tooling.** graft is not a project dependency and is not in the repository —
-> the `graft/` graph is generated on a machine where graft is installed. Everything below applies
-> only if you have it; without it, use ordinary search and read the source directly.
-
 This repo is indexed in `graft/`: small linked markdown nodes that explain each
 system and carry exact file:line spans, kept in sync with the code through git.
 
