@@ -245,9 +245,10 @@ controlled listeners and temporary directories; no internet or editor dependency
   66 CLI + 3 tunnel = 150 passed), `cargo doc --no-deps` (0 warnings). The ignored
   `probe` is a documented fixture driven by other tests.
 - Standards, repository-wide spec, security and performance reviews completed.
-  Public reports and summaries are in `.agents/reports/`; full reports containing
-  security details are retained privately under SECURITY.md. Spec review verified
-  all 11 requirements on macOS. Review completion is not security merge approval.
+  Review reports are retained locally in the ignored `.agents/reports/` directory
+  or maintainer-held private records, not versioned. Security details remain private
+  under SECURITY.md. Spec review verified all 11 requirements on macOS.
+  Review completion is not security merge approval.
 - Release performance review measured 30 runs after 3 warmups per case: default IPv4
   9.875 ms, preferred IPv6 9.927 ms, fallback to IPv6 9.871 ms, fallback to IPv4
   9.901 ms medians. Bare `true` was 1.739 ms. No timing budget or speedup is claimed.
