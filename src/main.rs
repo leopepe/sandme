@@ -134,6 +134,7 @@ fn failure_code(error: &SandmeError) -> ExitCode {
         SandmeError::CommandNotExecutable { .. } => ExitCode::from(NOT_EXECUTABLE),
         SandmeError::ConfigRead { .. }
         | SandmeError::ConfigParse { .. }
+        | SandmeError::InvalidProxyIpVersion
         | SandmeError::Execute(_)
         | SandmeError::ProxyStartup { .. }
         | SandmeError::TunnelProxyUnset

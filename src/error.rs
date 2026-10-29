@@ -27,6 +27,10 @@ pub enum SandmeError {
         source: toml::de::Error,
     },
 
+    /// The requested loopback family is invalid (SPEC-0019/FR-1909).
+    #[error("config error: invalid proxy_ip_version; expected ipv4 or ipv6")]
+    InvalidProxyIpVersion,
+
     /// Nothing of the name the user gave could be found to execute.
     ///
     /// Separate from [`Self::CommandNotExecutable`] because the two are
@@ -51,11 +55,17 @@ pub enum SandmeError {
 
     /// The proxy could not take its port; the invocation fails rather than
     /// run a sandbox whose egress is unmediated.
-    #[error("proxy could not listen on port {port}: {source}; is the port already in use?")]
+    #[error(
+        "proxy could not listen on either loopback address: {preferred}: {preferred_error}; {fallback}: {source}"
+    )]
     ProxyStartup {
-        /// The port the proxy tried to bind.
-        port: u16,
-        /// The underlying bind failure.
+        /// The preferred loopback address that failed.
+        preferred: std::net::SocketAddr,
+        /// Why the preferred setup failed.
+        preferred_error: std::io::Error,
+        /// The fallback loopback address that also failed.
+        fallback: std::net::SocketAddr,
+        /// Why fallback setup failed.
         source: std::io::Error,
     },
 

@@ -21,3 +21,6 @@
 # in flight, not the repository's history, and are stale the moment the work
 # lands — so they stay on the machine that wrote them.
 .agents/handovers/
+
+# Agent review reports are local evidence, not repository content.
+.agents/reports/
