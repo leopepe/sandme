@@ -14,6 +14,7 @@ rather than ignored.
 | `read_only_paths` | `SANDME_READ_ONLY_PATHS` | array of strings (env: comma-separated) | empty | Paths the sandboxed command may **read and execute** but **not write** — a toolchain prefix (a Homebrew directory, a language runtime) whose binaries must run while writes stay confined to `shared_paths`. `~/` expands and symlinks are resolved, as for `shared_paths`. |
 | `proxy` | `SANDME_PROXY` | boolean (env: `1` or `true`) | `true` | Whether to start the egress proxy and route the command through it. Set `false` to run with **no egress on macOS, and no outbound TCP on Linux** (see below). |
 | `proxy_port` | `SANDME_PROXY_PORT` | integer | `0` | Loopback port the egress proxy listens on. `0` (the default) lets the OS pick a free ephemeral port, so parallel `sandme` runs never collide. Set a non-zero value to pin a fixed, predictable port. |
+| `proxy_ip_version` | `SANDME_PROXY_IP_VERSION` | string: `ipv4` or `ipv6` | `ipv4` | Preferred loopback family. If setup fails, sandme tries the other family once and warns when fallback succeeds. |
 | `gui_mode` | `SANDME_GUI_MODE` | boolean (env: `1` or `true`) | `false` | Also grants read+write to the per-user state and scratch directories: `~/Library` and `$TMPDIR` on macOS, the XDG config, cache, data and runtime directories on Linux. GUI apps and most editors need this for their state, caches and scratch space. |
 | `allow_private_egress` | `SANDME_ALLOW_PRIVATE_EGRESS` | boolean (env: `1` or `true`) | `false` | Lets the proxy relay to your own machine and network — loopback, RFC1918, link-local. Needed for a locally hosted service (a local model server, a dev API); see [the sandbox model](sandbox-model.md#network) for what it re-opens. |
 
@@ -30,6 +31,19 @@ rather than ignored.
 
 ## A starting config
 
+The proxy starts one listener, using `127.0.0.1` for IPv4 or `::1` for IPv6. To prefer IPv6,
+set `proxy_ip_version = "ipv6"` or run `SANDME_PROXY_IP_VERSION=ipv6 sandme <command>`.
+IPv6 falls back to IPv4 on setup failure; the default IPv4 preference can fall back to IPv6.
+If both fail, sandme reports both errors and exits `125` without launching the command.
+The command receives the address and actual port of the listener that succeeded, including
+brackets around IPv6 in proxy URLs. Clients must use that published address; sandme does
+not start an additional listener for clients that choose another family.
+
+Values are exactly `ipv4` and `ipv6`; other values, including an empty environment value,
+are configuration errors. The preference selects the local listener only, independently
+of destination IP versions. With `proxy = false`, neither family is attempted.
+See [SPEC-0019](../specs/0019-proxy-ip-family-fallback.md).
+
 ```toml
 # ~/.sandme/config.toml
 shared_paths = [
@@ -41,6 +55,7 @@ read_only_paths = [
 ]
 gui_mode = true            # editors need ~/Library and scratch space
 # proxy_port defaults to 0 (an OS-chosen ephemeral port); set it only to pin a fixed port.
+proxy_ip_version = "ipv4"   # prefer IPv4; automatically try IPv6 if setup fails
 ```
 
 There is a fuller, commented version in [`examples/config.toml`](../../examples/config.toml), and

@@ -68,6 +68,17 @@ proxy = true
 proxy_port = 0
 
 # ---------------------------------------------------------------------------
+# proxy_ip_version  (env: SANDME_PROXY_IP_VERSION)
+#
+# Preferred loopback family: "ipv4" (default) or "ipv6". sandme starts one
+# listener. If the preferred family cannot listen, it tries the other once,
+# warns on fallback, and publishes the working address to the command.
+# If both fail, the command does not run. This does not select the IP family
+# used for outbound destinations. Values are lowercase; an empty value is invalid.
+# ---------------------------------------------------------------------------
+proxy_ip_version = "ipv4"
+
+# ---------------------------------------------------------------------------
 # gui_mode  (env: SANDME_GUI_MODE=1)
 #
 # Also grants read+write to ~/Library and to your per-user temp directory

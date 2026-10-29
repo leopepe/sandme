@@ -171,6 +171,8 @@ proxy.
 - **NFR-1101**: The plain-HTTP forward path SHALL perform no name resolution of its own; the one
   resolution SPEC-0003 NFR-202 permits is the vetting resolution in `egress::resolve`.
 
+> FR-1105 and its IPv6-secondary-listener diagnostic are superseded by SPEC-0019/FR-1902, FR-1905 and FR-1906. The original text below remains historical; the active behavior selects one family with automatic fallback.
+
 ## Interface contract
 
 No new flag, configuration key or exit code. `allow_private_egress` (SPEC-0003) now also gates the
@@ -219,7 +221,7 @@ A new diagnostic line is written to stderr when the IPv6 loopback listener canno
 | FR-1102 | `strips_hop_by_hop_headers_and_pins_host_to_the_vetted_authority` (`tests/cli.rs`) — the origin's echo does not carry `Proxy-Connection` |
 | FR-1103 | `strips_hop_by_hop_headers_and_pins_host_to_the_vetted_authority` (`tests/cli.rs`) — the origin's echo carries the vetted authority as `Host`, not the client's value |
 | FR-1104 | `refuses_to_relay_to_a_cgnat_destination_by_default`, `refuses_to_relay_to_a_benchmarking_destination_by_default` (`tests/cli.rs`); `restricts_every_range_the_sandbox_denies_directly`, `relays_to_ordinary_public_addresses`, `gates_cgnat_and_benchmarking_on_private_egress` (`src/proxy/egress.rs`) |
-| FR-1105 | `warns_when_the_ipv6_loopback_listener_cannot_bind` (`tests/cli.rs`) |
+| FR-1105 (superseded by SPEC-0019/FR-1902, FR-1905, FR-1906) | `falls_back_to_ipv4_when_ipv6_is_unavailable`, `falls_back_to_ipv6_when_ipv4_is_unavailable`, `reports_a_proxy_that_cannot_bind_with_the_reserved_status` (`tests/cli.rs`) |
 | NFR-1101 | FR-1101's tests, plus construction: `forward` receives the vetted `&[SocketAddr]` and calls no resolver |
 
 ## Assumptions
@@ -258,3 +260,4 @@ None.
 | 2026-09-12 | Initial draft, covering issue #32 findings 1–4 as deltas to SPEC-0003; finding 5 recorded as a deliberate non-goal. |
 | 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#49](https://github.com/leopepe/sandme/pull/49); every Verification test and its supporting production code is present on `main`. Ticked T-1101…T-1105, whose boxes were left unchecked when the work landed ([#34](https://github.com/leopepe/sandme/issues/34)). |
 | 2026-10-24 | Updated the FR-1104 Verification location for range and opt-out tests to `src/proxy/egress.rs`; requirements and status unchanged. |
+| 2026-10-29 | Annotated the listener-selection delta approved in SPEC-0019; original requirements retained. |

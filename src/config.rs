@@ -1,10 +1,10 @@
 //! Configuration from `~/.sandme/config.toml`, overridden by environment variables.
 //!
-//! The file is 1042 lines and takes the escape hatch in `docs/guidelines/code/simplicity.md`
-//! §2, whose limit is 400. The overage is tests and only tests — SPEC-0010's warning
-//! verifiers among them: the module proper, everything above `#[cfg(test)]`, is 399 lines,
-//! and its unit tests sit at its foot, where `docs/guidelines/code/consistency.md` §4
-//! requires them. Splitting either out is the worse alternative the guideline names.
+//! This cohesive configuration module exceeds the 400-line file limit under the
+//! escape hatch in `docs/guidelines/code/simplicity.md` §2. SPEC-0010's provenance
+//! checks and SPEC-0019's family parsing belong with the one configuration loader;
+//! its unit tests remain at its foot per `docs/guidelines/code/consistency.md` §4.
+//! Splitting configuration ownership merely to meet the file limit obscures precedence.
 
 use std::env;
 use std::path::{Path, PathBuf};
@@ -12,6 +12,36 @@ use std::path::{Path, PathBuf};
 use serde::Deserialize;
 
 use crate::error::SandmeError;
+
+/// Preferred proxy loopback family; the other family is the startup fallback.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum ProxyIpVersion {
+    /// Prefer IPv4 loopback (SPEC-0019/FR-1901).
+    #[default]
+    Ipv4,
+    /// Prefer IPv6 loopback.
+    Ipv6,
+}
+
+impl TryFrom<String> for ProxyIpVersion {
+    type Error = SandmeError;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        match value.as_str() {
+            "ipv4" => Ok(Self::Ipv4),
+            "ipv6" => Ok(Self::Ipv6),
+            _ => Err(SandmeError::InvalidProxyIpVersion),
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ProxyIpVersion {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let invalid = || serde::de::Error::custom(SandmeError::InvalidProxyIpVersion);
+        let value = String::deserialize(deserializer).map_err(|_| invalid())?;
+        Self::try_from(value).map_err(|_| invalid())
+    }
+}
 
 /// sandme configuration loaded from config file and environment variables.
 ///
@@ -45,6 +75,9 @@ pub struct Config {
     /// Port for the HTTP proxy server.
     pub proxy_port: u16,
 
+    /// Preferred loopback family, with automatic fallback (SPEC-0019/FR-1901).
+    pub proxy_ip_version: ProxyIpVersion,
+
     /// Allow GUI applications to write to their state and scratch directories.
     ///
     /// When `true`, the sandbox grants write access to `~/Library` and to the
@@ -71,6 +104,7 @@ impl Default for Config {
             read_only_paths: Vec::new(),
             proxy: default_proxy(),
             proxy_port: default_proxy_port(),
+            proxy_ip_version: ProxyIpVersion::default(),
             gui_mode: default_gui_mode(),
             allow_private_egress: default_allow_private_egress(),
         }
@@ -181,7 +215,7 @@ fn load_from(home: Option<&Path>) -> Result<Loaded, SandmeError> {
     // `SANDME_SHARED_PATHS`/`SANDME_READ_ONLY_PATHS` is judged against (FR-1003).
     let baseline_shared = file_merged.shared_paths.clone();
     let baseline_read_only = file_merged.read_only_paths.clone();
-    let env = Layer::from_environment();
+    let env = Layer::from_environment()?;
     let config = file_merged.merge(&env);
 
     let warnings = widening_warnings(&config, &env, &baseline_shared, &baseline_read_only);
@@ -204,17 +238,26 @@ struct Layer {
     read_only_paths: Option<Vec<String>>,
     proxy: Option<bool>,
     proxy_port: Option<u16>,
+    proxy_ip_version: Option<ProxyIpVersion>,
     gui_mode: Option<bool>,
     allow_private_egress: Option<bool>,
 }
 
 impl Layer {
-    /// Read the six `SANDME_*` variables from the process environment; the
+    /// Read the `SANDME_*` variables from the process environment; the
     /// environment wins over the file (FR-009). Reuses the same parsing
     /// helpers (`env_bool`, `split_list`) the config file's layer implicitly
     /// shares through `toml`'s own string/bool/list handling.
-    fn from_environment() -> Self {
-        Self {
+    fn from_environment() -> Result<Self, SandmeError> {
+        let proxy_ip_version = env::var_os("SANDME_PROXY_IP_VERSION")
+            .map(|value| {
+                value
+                    .into_string()
+                    .map_err(|_| SandmeError::InvalidProxyIpVersion)
+                    .and_then(ProxyIpVersion::try_from)
+            })
+            .transpose()?;
+        Ok(Self {
             shared_paths: env::var("SANDME_SHARED_PATHS").ok().map(|v| split_list(&v)),
             read_only_paths: env::var("SANDME_READ_ONLY_PATHS")
                 .ok()
@@ -223,11 +266,12 @@ impl Layer {
             proxy_port: env::var("SANDME_PROXY_PORT")
                 .ok()
                 .and_then(|v| v.parse().ok()),
+            proxy_ip_version,
             gui_mode: env::var("SANDME_GUI_MODE").ok().map(|v| env_bool(&v)),
             allow_private_egress: env::var("SANDME_ALLOW_PRIVATE_EGRESS")
                 .ok()
                 .map(|v| env_bool(&v)),
-        }
+        })
     }
 }
 
@@ -249,6 +293,9 @@ impl Config {
         }
         if let Some(proxy_port) = layer.proxy_port {
             self.proxy_port = proxy_port;
+        }
+        if let Some(proxy_ip_version) = layer.proxy_ip_version {
+            self.proxy_ip_version = proxy_ip_version;
         }
         if let Some(gui_mode) = layer.gui_mode {
             self.gui_mode = gui_mode;
@@ -402,6 +449,58 @@ mod tests {
     use super::*;
 
     #[test]
+    fn defaults_proxy_ip_version_to_ipv4() {
+        assert_eq!(Config::default().proxy_ip_version, ProxyIpVersion::Ipv4);
+    }
+
+    #[test]
+    fn loads_proxy_ip_version_from_file() {
+        for (value, expected) in [
+            ("ipv4", ProxyIpVersion::Ipv4),
+            ("ipv6", ProxyIpVersion::Ipv6),
+        ] {
+            let file: Layer = toml::from_str(&format!("proxy_ip_version = {value:?}")).unwrap();
+            assert_eq!(Config::default().merge(&file).proxy_ip_version, expected);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn environment_overrides_proxy_ip_version() {
+        for (file_value, env_value, expected) in [
+            ("ipv4", "ipv6", ProxyIpVersion::Ipv6),
+            ("ipv6", "ipv4", ProxyIpVersion::Ipv4),
+        ] {
+            let file: Layer =
+                toml::from_str(&format!("proxy_ip_version = {file_value:?}")).unwrap();
+            unsafe { env::set_var("SANDME_PROXY_IP_VERSION", env_value) };
+            let layer = Layer::from_environment().unwrap();
+            unsafe { env::remove_var("SANDME_PROXY_IP_VERSION") };
+            assert_eq!(
+                Config::default()
+                    .merge(&file)
+                    .merge(&layer)
+                    .proxy_ip_version,
+                expected
+            );
+        }
+    }
+
+    #[test]
+    #[serial_test::serial]
+    fn rejects_invalid_proxy_ip_version() {
+        for value in ["ipv5", "IPV6", "", " ipv4", "ipv6 "] {
+            let file = toml::from_str::<Layer>(&format!("proxy_ip_version = {value:?}"));
+            assert!(file.is_err());
+            unsafe { env::set_var("SANDME_PROXY_IP_VERSION", value) };
+            let layer = Layer::from_environment();
+            unsafe { env::remove_var("SANDME_PROXY_IP_VERSION") };
+            assert!(matches!(layer, Err(SandmeError::InvalidProxyIpVersion)));
+        }
+        assert!(toml::from_str::<Layer>("proxy_ip_version = 6").is_err());
+    }
+
+    #[test]
     fn default_share_is_the_current_directory() {
         // Given the process's working directory
         let cwd = env::current_dir().unwrap();
@@ -493,12 +592,13 @@ mod tests {
             read_only_paths: Vec::new(),
             proxy: true,
             proxy_port: 1234,
+            proxy_ip_version: ProxyIpVersion::default(),
             gui_mode: false,
             allow_private_egress: false,
         };
 
         // When the environment is applied
-        let config = config.merge(&Layer::from_environment());
+        let config = config.merge(&Layer::from_environment().unwrap());
         unsafe {
             std::env::remove_var("SANDME_SHARED_PATHS");
             std::env::remove_var("SANDME_PROXY_PORT");
@@ -527,7 +627,7 @@ mod tests {
         };
 
         // When the environment is applied
-        let config = config.merge(&Layer::from_environment());
+        let config = config.merge(&Layer::from_environment().unwrap());
         unsafe {
             std::env::remove_var("SANDME_PROXY");
             std::env::remove_var("SANDME_READ_ONLY_PATHS");
@@ -554,7 +654,7 @@ mod tests {
             ("", false),
         ] {
             unsafe { std::env::set_var("SANDME_PROXY", value) }
-            let config = Config::default().merge(&Layer::from_environment());
+            let config = Config::default().merge(&Layer::from_environment().unwrap());
             assert_eq!(config.proxy, expected, "SANDME_PROXY={value:?}");
         }
         unsafe { std::env::remove_var("SANDME_PROXY") }
@@ -612,7 +712,7 @@ mod tests {
             unsafe { std::env::set_var("SANDME_ALLOW_PRIVATE_EGRESS", value) }
 
             // When the environment is applied
-            let config = Config::default().merge(&Layer::from_environment());
+            let config = Config::default().merge(&Layer::from_environment().unwrap());
 
             // Then the proxy is allowed to reach the host's own networks
             assert!(config.allow_private_egress, "{value} should enable it");
@@ -622,7 +722,7 @@ mod tests {
         // re-opens the pivot in issue #15, so it takes an explicit yes
         for value in ["0", "false", "yes", ""] {
             unsafe { std::env::set_var("SANDME_ALLOW_PRIVATE_EGRESS", value) }
-            let config = Config::default().merge(&Layer::from_environment());
+            let config = Config::default().merge(&Layer::from_environment().unwrap());
             assert!(!config.allow_private_egress, "{value} should not enable it");
         }
         unsafe { std::env::remove_var("SANDME_ALLOW_PRIVATE_EGRESS") }

@@ -136,6 +136,8 @@ port, so that concurrent runs do not collide on a fixed port.
   loopback port, discover the port actually bound, and publish that port to the sandboxed command
   in the proxy URL and in the Seatbelt profile's network-outbound rule.
 
+> FR-1404 is extended by SPEC-0019/FR-1904: publish the successful listener's literal IP address as well as its actual port.
+
 ## Interface contract
 
 **Configuration**
@@ -219,3 +221,4 @@ as a tracked gap under Assumptions.
 | Date | Change |
 | --- | --- |
 | 2026-09-12 | Initial spec, reconciling shipped-but-unspecified behaviour from [#34](https://github.com/leopepe/sandme/issues/34) item 5: `/dev/fd` (FR-1401), the app-bundle redirect (FR-1402/FR-1403, MODIFYING SPEC-0001's argument-vector clause and SC-002), and `proxy_port = 0` (FR-1404). The `HOME`-unset config fallback is recorded as a tracked gap; the IPv6 listener is noted as already specified by SPEC-0003 and SPEC-0011. Status `Implemented`: every stated requirement's behaviour is on `main` and its Verification test exists. |
+| 2026-10-29 | Annotated the listener-selection delta approved in SPEC-0019; original requirements retained. |

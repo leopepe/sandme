@@ -44,6 +44,7 @@ fn sandme_at(home: &Path, cwd: &Path) -> Command {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
     cmd.env("HOME", home)
         .env("SANDME_PROXY_PORT", "0")
+        .env_remove("SANDME_PROXY_IP_VERSION")
         .env_remove("SANDME_SHARED_PATHS")
         .env_remove("SANDME_GUI_MODE")
         .env_remove("SANDME_ALLOW_PRIVATE_EGRESS")
@@ -164,34 +165,37 @@ fn denies_writes_outside_shared_paths() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn routes_http_egress_through_the_proxy() {
-    // Given a fake origin on loopback and sandme with its own proxy port
-    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-        .await
-        .unwrap();
-    let origin_port = origin.local_addr().unwrap().port();
-    tokio::spawn(serve_once(origin));
+    for version in ["ipv4", "ipv6"] {
+        // Given a fake origin on loopback and sandme with its own proxy port
+        let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        tokio::spawn(serve_once(origin));
 
-    let dir = workdir("routes-http-egress-through-the-proxy");
-    let mut cmd = sandme(&dir);
-    // The origin is on loopback, which the proxy refuses by default
-    // (SPEC-0003 FR-201), so this test opts out to keep its subject the
-    // routing rather than the destination policy.
-    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1");
-    cmd.args([
-        "curl",
-        "-sS",
-        "--max-time",
-        "10",
-        &format!("http://127.0.0.1:{origin_port}/"),
-    ]);
+        let dir = workdir("routes-http-egress-through-the-proxy");
+        let mut cmd = sandme(&dir);
+        cmd.env("SANDME_PROXY_IP_VERSION", version);
+        // The origin is on loopback, which the proxy refuses by default
+        // (SPEC-0003 FR-201), so this test opts out to keep its subject the
+        // routing rather than the destination policy.
+        cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1");
+        cmd.args([
+            "curl",
+            "-sS",
+            "--max-time",
+            "10",
+            &format!("http://127.0.0.1:{origin_port}/"),
+        ]);
 
-    // When the sandboxed command fetches from the origin
-    let output = cmd.output().unwrap();
+        // When the sandboxed command fetches from the origin
+        let output = cmd.output().unwrap();
 
-    // Then the answer travelled through sandme's proxy
-    assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains("served-through-proxy"));
-    let _ = std::fs::remove_dir_all(&dir);
+        // Then the answer travelled through sandme's proxy
+        assert!(output.status.success());
+        assert!(String::from_utf8_lossy(&output.stdout).contains("served-through-proxy"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]
@@ -414,23 +418,18 @@ fn allows_a_git_style_temp_write_under_gui_mode() {
 
 #[test]
 fn proxy_lifetime_follows_command() {
-    // Given a sandme invocation running a long-lived command
-    let dir = workdir("proxy-lifetime-follows-command");
-
-    // When the command is started
-    // Then the proxy port is listening while the command runs (FR-005)
-    let (mut child, port) = start_with_live_proxy(&dir, &["sleep", "2"]);
-
-    // And when the command exits
-    let status = child.wait().unwrap();
-    assert!(status.success());
-
-    // Then the proxy stops — its lifetime follows the command's
-    std::thread::sleep(std::time::Duration::from_millis(200));
-    let proxy_alive_after =
-        std::net::TcpStream::connect(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok();
-    assert!(!proxy_alive_after, "proxy should stop after command exits");
-    let _ = std::fs::remove_dir_all(&dir);
+    // Given either selected family and a sandboxed child held open on stdin
+    for version in ["ipv4", "ipv6"] {
+        let dir = workdir(&format!("proxy-lifetime-{version}"));
+        let mut cmd = sandme(&dir);
+        cmd.env("SANDME_PROXY_IP_VERSION", version);
+        let (mut fixture, address) = published_proxy(cmd, &dir);
+        assert_proxy_challenge_on(address);
+        // When the sandboxed child exits
+        assert!(fixture.stop().unwrap().success());
+        // Then its proxy no longer accepts connections (FR-1907)
+        assert!(std::net::TcpStream::connect(address).is_err());
+    }
 }
 
 /// Keep the binary and sandboxed child alive while their published proxy is probed.
@@ -506,25 +505,21 @@ fn assert_proxy_challenge_on(address: SocketAddr) {
     );
 }
 
-#[test]
-fn serves_both_loopback_families_on_the_published_port() {
-    // Given a real sandme invocation whose sandboxed child publishes only
-    // the address after @ (never the invocation's proxy URL credential)
-    let dir = workdir("serves-both-loopback-families-on-the-published-port");
-    let mut cmd = sandme(&dir);
+/// Start a real sandboxed command and observe its credential-free proxy address.
+fn published_proxy(mut cmd: Command, dir: &Path) -> (PublishedProxyFixture, SocketAddr) {
     cmd.stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
         .arg(
-            "case \"$HTTP_PROXY\" in *@*) printf '%s\\n' \"${HTTP_PROXY##*@}\" > published-address ;; *) exit 1 ;; esac; read _; exit 0",
+            "test \"$HTTP_PROXY\" = \"$HTTPS_PROXY\" && test \"$HTTP_PROXY\" = \"$http_proxy\" && test \"$HTTP_PROXY\" = \"$https_proxy\" || exit 1; case \"$HTTP_PROXY\" in http://sandme:*@*) printf '%s\\n' \"${HTTP_PROXY##*@}\" > published-address ;; *) exit 1 ;; esac; read _; exit 0",
         );
     let child = cmd.spawn().unwrap_or_else(|error| {
-        let cleanup = std::fs::remove_dir_all(&dir);
+        let cleanup = std::fs::remove_dir_all(dir);
         panic!("could not spawn sandme: {error}; cleanup: {cleanup:?}");
     });
     let mut fixture = PublishedProxyFixture {
         child,
-        dir: dir.clone(),
+        dir: dir.to_path_buf(),
     };
 
     // When the child has published the actual ephemeral address
@@ -547,21 +542,157 @@ fn serves_both_loopback_families_on_the_published_port() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     };
     let published: SocketAddr = published.trim().parse().unwrap();
-    assert_eq!(published.ip(), std::net::IpAddr::V4(Ipv4Addr::LOCALHOST));
-    let port = published.port();
+    (fixture, published)
+}
 
-    // Then the nonzero published port accepts both address families and each
-    // listener answers an unauthenticated request with the same 407 challenge
-    assert_ne!(port, 0, "an ephemeral bind resolves to a real port");
-    for address in [Ipv4Addr::LOCALHOST.into(), Ipv6Addr::LOCALHOST.into()] {
-        assert_proxy_challenge_on(SocketAddr::new(address, port));
+#[test]
+fn publishes_the_selected_ephemeral_proxy_address() {
+    // Given either preference with an OS-chosen port (FR-1903, FR-1904)
+    for version in ["ipv4", "ipv6"] {
+        let dir = workdir(&format!("publishes-selected-address-{version}"));
+        let mut cmd = sandme(&dir);
+        if version == "ipv6" {
+            cmd.env("SANDME_PROXY_IP_VERSION", version);
+        }
+        // When the child publishes its actual address after checking all four proxy variables
+        let (mut fixture, address) = published_proxy(cmd, &dir);
+        // Then the selected family, real port and credential gate are usable
+        assert_eq!(address.is_ipv4(), version == "ipv4");
+        assert_ne!(address.port(), 0);
+        assert_proxy_challenge_on(address);
+        assert!(fixture.stop().unwrap().success());
+        assert_eq!(selection_stderr(&mut fixture), "");
     }
-    assert!(
-        fixture.stop().unwrap().success(),
-        "sandme did not exit successfully"
-    );
-    drop(fixture);
-    assert!(!dir.exists(), "the fixture work directory must be removed");
+}
+
+fn selection_stderr(fixture: &mut PublishedProxyFixture) -> String {
+    use std::io::Read;
+    let mut stderr = String::new();
+    fixture
+        .child
+        .stderr
+        .take()
+        .unwrap()
+        .read_to_string(&mut stderr)
+        .unwrap();
+    stderr
+}
+
+/// Reserve a controlled port in both families, keeping it occupied until each test is ready.
+fn held_loopbacks() -> (std::net::TcpListener, std::net::TcpListener, u16) {
+    for _ in 0..10 {
+        let v4 = std::net::TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
+        let port = v4.local_addr().unwrap().port();
+        if let Ok(v6) = std::net::TcpListener::bind((Ipv6Addr::LOCALHOST, port)) {
+            return (v4, v6, port);
+        }
+    }
+    panic!("could not reserve a port in both loopback families");
+}
+
+#[test]
+fn uses_the_preferred_loopback_family() {
+    for version in ["ipv4", "ipv6"] {
+        // Given a ready preferred family and an occupied opposite address
+        let (v4, v6, port) = held_loopbacks();
+        let (preferred, opposite) = if version == "ipv4" {
+            (v4, v6)
+        } else {
+            (v6, v4)
+        };
+        let opposite_address = opposite.local_addr().unwrap();
+        drop(preferred);
+        let dir = workdir(&format!("uses-preferred-family-{version}"));
+        let mut cmd = sandme(&dir);
+        cmd.env("SANDME_PROXY_IP_VERSION", version)
+            .env("SANDME_PROXY_PORT", port.to_string());
+        // When the preferred listener succeeds
+        let (mut fixture, address) = published_proxy(cmd, &dir);
+        // Then the opposite family is not served or attempted (FR-1910)
+        assert_eq!(address.is_ipv4(), version == "ipv4");
+        assert_eq!(address.port(), port);
+        assert_proxy_challenge_on(address);
+        drop(opposite);
+        let _available = std::net::TcpListener::bind(opposite_address).unwrap();
+        assert!(fixture.stop().unwrap().success());
+        assert_eq!(selection_stderr(&mut fixture), "");
+    }
+}
+
+#[test]
+fn falls_back_to_ipv6_when_ipv4_is_unavailable() {
+    assert_fallback("ipv4");
+}
+
+#[test]
+fn rejects_invalid_proxy_ip_version() {
+    for (file, value) in [
+        (true, "\"ipv5\""),
+        (true, "6"),
+        (true, "\"\""),
+        (false, "ipv5"),
+        (false, ""),
+        (false, "IPV6"),
+    ] {
+        // Given an invalid file or environment preference (FR-1909)
+        let dir = workdir("rejects-invalid-proxy-ip-version");
+        let mut cmd = sandme(&dir);
+        if file {
+            std::fs::create_dir_all(dir.join(".sandme")).unwrap();
+            std::fs::write(
+                dir.join(".sandme/config.toml"),
+                format!("proxy_ip_version = {value}\n"),
+            )
+            .unwrap();
+        } else {
+            cmd.env("SANDME_PROXY_IP_VERSION", value);
+        }
+        // When configuration is loaded before any child starts
+        let output = cmd.arg("touch child-ran").output().unwrap();
+        // Then invalid input fails with a useful diagnostic and no child
+        assert_eq!(output.status.code(), Some(125));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        for expected in ["proxy_ip_version", "ipv4", "ipv6"] {
+            assert!(stderr.contains(expected), "{stderr}");
+        }
+        assert!(!dir.join("child-ran").exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn falls_back_to_ipv4_when_ipv6_is_unavailable() {
+    assert_fallback("ipv6");
+}
+
+fn assert_fallback(version: &str) {
+    // Given an occupied preferred address and a free fallback address
+    let (v4, v6, port) = held_loopbacks();
+    let (preferred, fallback) = if version == "ipv4" {
+        (v4, v6)
+    } else {
+        (v6, v4)
+    };
+    let preferred_address = preferred.local_addr().unwrap();
+    let fallback_address = fallback.local_addr().unwrap();
+    drop(fallback);
+    let dir = workdir(&format!("falls-back-from-{version}"));
+    let mut cmd = sandme(&dir);
+    cmd.env("SANDME_PROXY_IP_VERSION", version)
+        .env("SANDME_PROXY_PORT", port.to_string());
+    // When startup discovers the preferred family cannot bind
+    let (mut fixture, address) = published_proxy(cmd, &dir);
+    // Then the fallback is usable at the same configured port, with one diagnostic
+    assert_eq!(address, fallback_address);
+    assert_proxy_challenge_on(address);
+    assert!(fixture.stop().unwrap().success());
+    let stderr = selection_stderr(&mut fixture);
+    assert_eq!(stderr.lines().count(), 1, "{stderr}");
+    assert!(stderr.starts_with(&format!(
+        "sandme: proxy could not listen on {preferred_address}: "
+    )));
+    assert!(stderr.contains(&format!("; continuing on {fallback_address}")));
+    assert!(!stderr.contains('@'));
 }
 
 /// Start sandme on a port this test can probe, and return once its proxy
@@ -573,11 +704,20 @@ fn serves_both_loopback_families_on_the_published_port() {
 /// exiting 1 before the child ever runs — so a lost race is retried with a
 /// fresh port rather than failing a test that is about proxy lifetime.
 fn start_with_live_proxy(dir: &Path, args: &[&str]) -> (std::process::Child, u16) {
+    start_with_live_proxy_for(dir, args, "ipv4")
+}
+
+fn start_with_live_proxy_for(
+    dir: &Path,
+    args: &[&str],
+    version: &str,
+) -> (std::process::Child, u16) {
     for _ in 0..5 {
         let port = free_port();
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
         cmd.env("HOME", dir)
             .env("SANDME_PROXY_PORT", port.to_string())
+            .env("SANDME_PROXY_IP_VERSION", version)
             .env_remove("SANDME_SHARED_PATHS")
             .current_dir(dir)
             .args(args);
@@ -585,7 +725,12 @@ fn start_with_live_proxy(dir: &Path, args: &[&str]) -> (std::process::Child, u16
 
         // Poll rather than sleep a fixed span, so a loaded machine is slow
         // here instead of flaky.
-        let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+        let ip = if version == "ipv4" {
+            Ipv4Addr::LOCALHOST.into()
+        } else {
+            Ipv6Addr::LOCALHOST.into()
+        };
+        let addr = SocketAddr::new(ip, port);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
         while std::time::Instant::now() < deadline {
             if std::net::TcpStream::connect(addr).is_ok() {
@@ -1073,27 +1218,25 @@ fn reports_a_malformed_config_with_the_reserved_status() {
 
 #[test]
 fn reports_a_proxy_that_cannot_bind_with_the_reserved_status() {
-    // Given a port already taken by someone else
+    // Given both loopback addresses occupied (FR-1906)
     let dir = workdir("reports-a-proxy-that-cannot-bind");
-    let port = free_port();
-    let holder = std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
-        .expect("the port was free a moment ago");
-    let mut cmd = sandme(&dir);
-    cmd.env("SANDME_PROXY_PORT", port.to_string())
-        .args(["echo", "hi"]);
-
-    // When sandme is asked to put its proxy there
-    let output = cmd.output().unwrap();
-    drop(holder);
-
-    // Then the invocation fails with sandme's own status, not the command's
-    // (FR-801, FR-802)
-    assert_eq!(output.status.code(), Some(125));
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.starts_with("sandme: proxy could not listen on port"),
-        "expected a prefixed diagnostic naming the port; got {stderr:?}"
-    );
+    let (_v4, _v6, port) = held_loopbacks();
+    for version in ["ipv4", "ipv6"] {
+        let mut cmd = sandme(&dir);
+        cmd.env("SANDME_PROXY_PORT", port.to_string())
+            .env("SANDME_PROXY_IP_VERSION", version)
+            .arg("touch child-ran");
+        // When neither preferred nor fallback setup succeeds
+        let output = cmd.output().unwrap();
+        // Then startup reports both failures without running the child (FR-801, FR-1906)
+        assert_eq!(output.status.code(), Some(125));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(stderr.starts_with("sandme: proxy could not listen on either loopback address:"));
+        assert!(stderr.contains(&format!("127.0.0.1:{port}: ")));
+        assert!(stderr.contains(&format!("[::1]:{port}: ")));
+        assert_eq!(stderr.lines().count(), 1);
+        assert!(!dir.join("child-ran").exists());
+    }
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -1265,36 +1408,39 @@ async fn refuses_to_relay_to_a_service_on_host_loopback() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn relays_to_host_loopback_when_private_egress_is_allowed() {
-    // Given the opt-out enabled — the local-model-server workflow — and an
-    // origin that echoes back the request it received
-    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-        .await
-        .unwrap();
-    let origin_port = origin.local_addr().unwrap().port();
-    tokio::spawn(echo_request_once(origin));
+    for version in ["ipv4", "ipv6"] {
+        // Given the opt-out enabled — the local-model-server workflow — and an
+        // origin that echoes back the request it received
+        let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        tokio::spawn(echo_request_once(origin));
 
-    let dir = workdir("relays-to-host-loopback-when-allowed");
-    let mut cmd = sandme(&dir);
-    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").args([
-        "curl",
-        "-sS",
-        "--max-time",
-        "10",
-        &format!("http://127.0.0.1:{origin_port}/"),
-    ]);
+        let dir = workdir("relays-to-host-loopback-when-allowed");
+        let mut cmd = sandme(&dir);
+        cmd.env("SANDME_PROXY_IP_VERSION", version);
+        cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").args([
+            "curl",
+            "-sS",
+            "--max-time",
+            "10",
+            &format!("http://127.0.0.1:{origin_port}/"),
+        ]);
 
-    // When the sandboxed command runs
-    let output = cmd.output().unwrap();
+        // When the sandboxed command runs
+        let output = cmd.output().unwrap();
 
-    // Then the request is relayed, and the credential is not relayed with it:
-    // it authenticates the child to sandme and is no origin's business (FR-204)
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("GET / HTTP/1.1"), "got: {stdout:?}");
-    assert!(
-        !stdout.to_lowercase().contains("proxy-authorization"),
-        "the origin should never see the credential; got: {stdout:?}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+        // Then the request is relayed, and the credential is not relayed with it:
+        // it authenticates the child to sandme and is no origin's business (FR-204)
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("GET / HTTP/1.1"), "got: {stdout:?}");
+        assert!(
+            !stdout.to_lowercase().contains("proxy-authorization"),
+            "the origin should never see the credential; got: {stdout:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]
@@ -1382,10 +1528,9 @@ fn refuses_a_local_client_on_the_ipv6_listener_without_the_invocation_credential
     use std::io::{Read, Write};
 
     // Given a sandme invocation in flight, and an unrelated local process
-    // reaching the proxy over IPv6 loopback — the second listener, which #10
-    // item 2 reported once bound a port of its own and went unchecked
+    // reaching the proxy over the selected IPv6 loopback listener (SPEC-0019/NFR-1901)
     let dir = workdir("refuses-ipv6-client-without-credential");
-    let (mut child, port) = start_with_live_proxy(&dir, &["sleep", "5"]);
+    let (mut child, port) = start_with_live_proxy_for(&dir, &["sleep", "5"], "ipv6");
 
     // When it sends a plain request and a CONNECT to [::1]:port with no
     // credential, as any local process could
@@ -1428,15 +1573,8 @@ async fn refuses_to_relay_to_host_loopback_over_the_ipv6_listener() {
 
     let dir = workdir("refuses-ipv6-pivot-to-host-loopback");
     let mut cmd = sandme(&dir);
-    // The child rewrites its own proxy URL from 127.0.0.1 to [::1], reusing the
-    // credential sandme put in HTTP_PROXY. The request therefore lands on the
-    // IPv6 listener while still authenticating as this invocation's child, so a
-    // 403 (not a 407) proves the IPv6 path accepted the credential and then
-    // refused the destination.
-    cmd.arg(format!(
-        "curl -sS --max-time 10 -o /dev/null -w '%{{http_code}}' \
-         -x \"$(printf %s \"$HTTP_PROXY\" | sed s/127.0.0.1/[::1]/)\" \
-         http://127.0.0.1:{origin_port}/"
+    cmd.env("SANDME_PROXY_IP_VERSION", "ipv6").arg(format!(
+        "curl -sS --max-time 10 -o /dev/null -w '%{{http_code}}' http://127.0.0.1:{origin_port}/"
     ));
 
     // When the sandboxed command runs
@@ -1576,54 +1714,6 @@ async fn strips_hop_by_hop_headers_and_pins_host_to_the_vetted_authority() {
         "hop-by-hop headers must not reach the origin; got: {stdout:?}"
     );
     let _ = std::fs::remove_dir_all(&dir);
-}
-
-#[test]
-fn warns_when_the_ipv6_loopback_listener_cannot_bind() {
-    // Given a process squatting [::1]:port with IPv4 loopback on that port free
-    // — the silent-failure condition issue #32 §2 reports
-    let dir = workdir("warns-when-ipv6-listener-cannot-bind");
-    let (_squatter, port) = v6_squatter_on_a_v4_free_port();
-    let mut cmd = Command::new(env!("CARGO_BIN_EXE_sandme"));
-    cmd.env("HOME", &dir)
-        .env("SANDME_PROXY_PORT", port.to_string())
-        .env_remove("SANDME_SHARED_PATHS")
-        .env_remove("SANDME_ALLOW_PRIVATE_EGRESS")
-        .current_dir(&dir)
-        .args(["true"]);
-
-    // When sandme starts its proxy on that port
-    let output = cmd.output().unwrap();
-
-    // Then it does not fail silently: it warns on stderr that the IPv6 loopback
-    // listener could not bind, naming the address, and the child still runs —
-    // the invocation continues on IPv4 (FR-1105)
-    assert!(output.status.success(), "the invocation should still run");
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("sandme: proxy could not also listen on IPv6 loopback")
-            && stderr.contains("[::1]"),
-        "expected a warning naming the IPv6 loopback listener; got: {stderr:?}"
-    );
-    let _ = std::fs::remove_dir_all(&dir);
-}
-
-/// A held IPv6 loopback listener on a port whose IPv4 loopback is free, so a
-/// sandme started there binds IPv4 and then finds IPv6 already taken.
-///
-/// The IPv6 bind is what stands in for the squatter of issue #32 §2; the IPv4
-/// probe-bind only confirms the primary listener will come up, and is dropped
-/// before it returns so sandme can take it.
-fn v6_squatter_on_a_v4_free_port() -> (std::net::TcpListener, u16) {
-    for _ in 0..10 {
-        let squatter =
-            std::net::TcpListener::bind(SocketAddr::from((Ipv6Addr::LOCALHOST, 0))).unwrap();
-        let port = squatter.local_addr().unwrap().port();
-        if std::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, port))).is_ok() {
-            return (squatter, port);
-        }
-    }
-    panic!("no port free on IPv4 loopback while squatted on IPv6 loopback");
 }
 
 /// Answer one HTTP request with the request itself, so a test can assert on
@@ -2212,55 +2302,58 @@ fn keeps_a_user_supplied_git_ssh_command() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn reaches_an_origin_through_the_ssh_connect_tunnel() {
-    // Given a raw TCP origin on loopback — standing in for the byte stream an
-    // SSH server presents — and sandme with private egress allowed so the proxy
-    // will relay to loopback (SPEC-0003 FR-205), keeping this test's subject the
-    // tunnel rather than the destination policy
-    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-        .await
-        .unwrap();
-    let origin_port = origin.local_addr().unwrap().port();
-    tokio::spawn(echo_line_once(origin));
+    for version in ["ipv4", "ipv6"] {
+        // Given a raw TCP origin on loopback — standing in for the byte stream an
+        // SSH server presents — and sandme with private egress allowed so the proxy
+        // will relay to loopback (SPEC-0003 FR-205), keeping this test's subject the
+        // tunnel rather than the destination policy
+        let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        tokio::spawn(echo_line_once(origin));
 
-    let dir = workdir("reaches-an-origin-through-the-ssh-tunnel");
-    let exe = env!("CARGO_BIN_EXE_sandme");
-    let mut cmd = sandme(&dir);
-    // The sandboxed shell runs sandme's own ProxyCommand mode, exactly as ssh
-    // would: it reads the proxy address and this run's credential from
-    // HTTP_PROXY, opens an HTTP CONNECT tunnel to the origin, and relays
-    // stdin/stdout across it (SPEC-0012 FR-1203, FR-1204). The helper is
-    // exec'd from outside the shared path, which the profile's unscoped
-    // `process-exec` already allows — so the tunnel needs no profile change.
-    //
-    // A failed tunnel is followed by a probe of the proxy the child was handed,
-    // reported on stderr and reached with `--noproxy` so curl connects to it
-    // rather than through it. It separates the two causes a bare relay failure
-    // cannot: a status means the sandbox let the child reach the proxy and the
-    // tunnel itself failed, `000` means the egress grant did not hold and no
-    // client could have reached it. It names the address, never `$HTTP_PROXY`
-    // itself, which carries this run's credential. On success the tunnel exits
-    // `0` and the probe never runs.
-    cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").arg(format!(
-        "printf 'ping\\n' | '{exe}' --sandme-ssh-connect 127.0.0.1 {origin_port} || \
+        let dir = workdir("reaches-an-origin-through-the-ssh-tunnel");
+        let exe = env!("CARGO_BIN_EXE_sandme");
+        let mut cmd = sandme(&dir);
+        cmd.env("SANDME_PROXY_IP_VERSION", version);
+        // The sandboxed shell runs sandme's own ProxyCommand mode, exactly as ssh
+        // would: it reads the proxy address and this run's credential from
+        // HTTP_PROXY, opens an HTTP CONNECT tunnel to the origin, and relays
+        // stdin/stdout across it (SPEC-0012 FR-1203, FR-1204). The helper is
+        // exec'd from outside the shared path, which the profile's unscoped
+        // `process-exec` already allows — so the tunnel needs no profile change.
+        //
+        // A failed tunnel is followed by a probe of the proxy the child was handed,
+        // reported on stderr and reached with `--noproxy` so curl connects to it
+        // rather than through it. It separates the two causes a bare relay failure
+        // cannot: a status means the sandbox let the child reach the proxy and the
+        // tunnel itself failed, `000` means the egress grant did not hold and no
+        // client could have reached it. It names the address, never `$HTTP_PROXY`
+        // itself, which carries this run's credential. On success the tunnel exits
+        // `0` and the probe never runs.
+        cmd.env("SANDME_ALLOW_PRIVATE_EGRESS", "1").arg(format!(
+            "printf 'ping\\n' | '{exe}' --sandme-ssh-connect 127.0.0.1 {origin_port} || \
          curl -sS --max-time 10 --noproxy '*' -o /dev/null \
          -w 'proxy-probe=%{{http_code}} at %{{remote_ip}}:%{{remote_port}}\\n' \
          \"$HTTP_PROXY\" >&2"
-    ));
+        ));
 
-    // When the sandboxed command runs
-    let output = cmd.output().unwrap();
+        // When the sandboxed command runs
+        let output = cmd.output().unwrap();
 
-    // Then the origin's reply came back across the tunnel: the credential
-    // authorised the CONNECT and bytes crossed both ways
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(
-        stdout.contains("tunnelled-pong"),
-        "the ssh tunnel did not relay the origin's reply; origin was \
+        // Then the origin's reply came back across the tunnel: the credential
+        // authorised the CONNECT and bytes crossed both ways
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("tunnelled-pong"),
+            "the ssh tunnel did not relay the origin's reply; origin was \
          127.0.0.1:{origin_port}, sandme exited {:?}, stdout: {stdout:?}, stderr: {}",
-        output.status.code(),
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let _ = std::fs::remove_dir_all(&dir);
+            output.status.code(),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 /// Answer one raw TCP client with a fixed marker, so a test can prove bytes
@@ -2280,62 +2373,67 @@ async fn echo_line_once(listener: tokio::net::TcpListener) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[cfg(target_os = "macos")]
 async fn proxy_disabled_wires_no_proxy_and_denies_egress() {
-    // Given a live origin on loopback that would answer if it were reachable —
-    // so a failed fetch means the sandbox blocked egress, not a dead target
-    let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
-        .await
-        .unwrap();
-    let origin_port = origin.local_addr().unwrap().port();
-    tokio::spawn(serve_once(origin));
+    for version in ["ipv4", "ipv6"] {
+        // Given a live origin on loopback that would answer if it were reachable —
+        // so a failed fetch means the sandbox blocked egress, not a dead target
+        let origin = tokio::net::TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .await
+            .unwrap();
+        let origin_port = origin.local_addr().unwrap().port();
+        tokio::spawn(serve_once(origin));
 
-    let dir = workdir("proxy-disabled-no-egress");
+        let dir = workdir("proxy-disabled-no-egress");
 
-    // With SANDME_PROXY=0, the child's environment carries no HTTP(S)_PROXY:
-    // no proxy was started, so nothing was wired (SPEC-0017/FR-1701). This holds
-    // even when sandme's own environment exports a proxy — the off path clears
-    // all four spellings on the child, so the guarantee is not env-dependent
-    // (F4). We set them here precisely to prove that.
-    let mut env_cmd = sandme(&dir);
-    env_cmd
-        .env("SANDME_PROXY", "0")
-        .env("HTTP_PROXY", "http://inherited.example:9999")
-        .env("HTTPS_PROXY", "http://inherited.example:9999")
-        .env("http_proxy", "http://inherited.example:9999")
-        .env("https_proxy", "http://inherited.example:9999")
-        .args([
-            "sh",
-            "-c",
-            "printf 'p=[%s][%s]' \"$HTTP_PROXY\" \"$HTTPS_PROXY\"",
+        // With SANDME_PROXY=0, the child's environment carries no HTTP(S)_PROXY:
+        // no proxy was started, so nothing was wired (SPEC-0017/FR-1701). This holds
+        // even when sandme's own environment exports a proxy — the off path clears
+        // all four spellings on the child, so the guarantee is not env-dependent
+        // (F4). We set them here precisely to prove that.
+        let mut env_cmd = sandme(&dir);
+        env_cmd.env("SANDME_PROXY_IP_VERSION", version);
+        env_cmd
+            .env("SANDME_PROXY", "0")
+            .env("HTTP_PROXY", "http://inherited.example:9999")
+            .env("HTTPS_PROXY", "http://inherited.example:9999")
+            .env("http_proxy", "http://inherited.example:9999")
+            .env("https_proxy", "http://inherited.example:9999")
+            .args([
+                "sh",
+                "-c",
+                "printf 'p=[%s][%s]' \"$HTTP_PROXY\" \"$HTTPS_PROXY\"",
+            ]);
+        let env_out = env_cmd.output().unwrap();
+        assert_eq!(String::from_utf8_lossy(&env_out.stderr), "");
+        assert_eq!(
+            String::from_utf8_lossy(&env_out.stdout),
+            "p=[][]",
+            "no HTTP(S)_PROXY may reach the child with the proxy off, even one sandme inherited"
+        );
+
+        // And the sandbox grants no egress at all: a fetch to the live origin fails
+        // rather than succeeding, because with the proxy off the profile emits no
+        // network-outbound egress line.
+        let mut net_cmd = sandme(&dir);
+        net_cmd.env("SANDME_PROXY_IP_VERSION", version);
+        net_cmd.env("SANDME_PROXY", "0").args([
+            "curl",
+            "-sS",
+            "--max-time",
+            "5",
+            &format!("http://127.0.0.1:{origin_port}/"),
         ]);
-    let env_out = env_cmd.output().unwrap();
-    assert_eq!(
-        String::from_utf8_lossy(&env_out.stdout),
-        "p=[][]",
-        "no HTTP(S)_PROXY may reach the child with the proxy off, even one sandme inherited"
-    );
+        let net_out = net_cmd.output().unwrap();
+        assert!(
+            !net_out.status.success(),
+            "egress must be denied with the proxy off"
+        );
+        assert!(
+            !String::from_utf8_lossy(&net_out.stdout).contains("served-through-proxy"),
+            "the request must not have reached the origin"
+        );
 
-    // And the sandbox grants no egress at all: a fetch to the live origin fails
-    // rather than succeeding, because with the proxy off the profile emits no
-    // network-outbound egress line.
-    let mut net_cmd = sandme(&dir);
-    net_cmd.env("SANDME_PROXY", "0").args([
-        "curl",
-        "-sS",
-        "--max-time",
-        "5",
-        &format!("http://127.0.0.1:{origin_port}/"),
-    ]);
-    let net_out = net_cmd.output().unwrap();
-    assert!(
-        !net_out.status.success(),
-        "egress must be denied with the proxy off"
-    );
-    assert!(
-        !String::from_utf8_lossy(&net_out.stdout).contains("served-through-proxy"),
-        "the request must not have reached the origin"
-    );
-
-    let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[test]

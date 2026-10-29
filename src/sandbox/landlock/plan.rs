@@ -241,6 +241,7 @@ mod tests {
             read_only_paths: Vec::new(),
             proxy: true,
             proxy_port: 8787,
+            proxy_ip_version: crate::config::ProxyIpVersion::default(),
             gui_mode,
             allow_private_egress: false,
         }

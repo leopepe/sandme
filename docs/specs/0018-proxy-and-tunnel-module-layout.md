@@ -119,6 +119,8 @@ any existing security-review coverage.
 - **NFR-1802**: The change SHALL add 0 Cargo dependencies and 0 production binary or library targets.
   An integration-test target is not a production target.
 
+> NFR-1801's dual-listener preservation, Story 2 scenario 3 and the corresponding runtime contract are superseded by SPEC-0019/FR-1902, FR-1904 and FR-1910. Other module-refactor guarantees remain applicable.
+
 ## Interface contract
 
 **Crate-facing interfaces** — the paths and signatures callers retain:
@@ -184,7 +186,7 @@ SSH failure characterizations.
 
 | Condition | Tests / inspection |
 | --- | --- |
-| Actual ephemeral port and IPv6 warning | `serves_both_loopback_families_on_the_published_port` (move to CLI), `warns_when_the_ipv6_loopback_listener_cannot_bind` |
+| Actual ephemeral address and family fallback (SPEC-0019 supersedes dual-listener preservation) | `publishes_the_selected_ephemeral_proxy_address`, `uses_the_preferred_loopback_family`, `falls_back_to_ipv4_when_ipv6_is_unavailable`, `falls_back_to_ipv6_when_ipv4_is_unavailable` (`tests/cli.rs`) |
 | Auth before resolution; pinned addresses and sanitized forwarding | Existing `refuses_a_local_client*`, `refuses_to_relay*`, `relays_to_host_loopback_when_private_egress_is_allowed`, `strips_hop_by_hop_headers_and_pins_host_to_the_vetted_authority`; inspect the single-resolution path |
 | SSH success and refusal without normal startup | Existing `reaches_an_origin_through_the_ssh_connect_tunnel`; planned `reports_an_ssh_tunnel_without_a_usable_proxy` and `reports_a_refused_ssh_connect_with_the_reserved_status` |
 | Proxy-off and user's SSH override | Existing `proxy_disabled_wires_no_proxy_and_denies_egress`, `keeps_a_user_supplied_git_ssh_command`, `wires_the_git_ssh_command_into_the_child` |
@@ -407,3 +409,4 @@ All Apply tasks are complete, but Status remains Accepted pending formal Conduct
 | 2026-10-27 | Owner approved shared failure diagnostics for metadata, CGNAT and benchmarking denial cases and one further existing-draft CI checkpoint. The builder selected one private test-only formatter. Preserve all predicates, arguments and runtime behavior; no requirement/interface/Status/completion change. Both original native macOS failures remain recorded. |
 | 2026-10-27 | T-1804 Apply closure approved: active-pointer updates, preserved interfaces/assertions/dependency surface, required project reports and qualified structural/native-platform evidence are recorded. All four Apply tasks are complete; legacy spec debt and historical failures remain open/preserved. This is a local-only documentation checkpoint, not final review, Archive, merge or release; Status stays Accepted pending formal Conductor Phases 5–7. |
 | 2026-10-28 | Owner approved Phase 7 Archive after completed formal Phase 5/F1 and scoped Phase 6 Verify: FR-1801–FR-1803 and NFR-1801–NFR-1802 are implemented and verified; all four tasks remain complete. Set Status to Implemented without changing requirements or interfaces. Retain W1: current-tree/new F1 fixture native-matrix CI is unrun; published-source Linux evidence is qualified, not current-tree certification. Legacy spec debt, raw reports, historical failures and timing/kernel/proof limits remain preserved. Archive is local bookkeeping, not commit, push, merge or release authorization. |
+| 2026-10-29 | Annotated the listener-selection delta approved in SPEC-0019; original requirements retained. |
