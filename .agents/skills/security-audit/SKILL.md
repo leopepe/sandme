@@ -22,7 +22,7 @@ guarantees nothing.
 | Process privilege escalation | `run` (the `sandbox-exec -p` invocation, env wiring, signal handling), `resolve_app_bundle_executable`, the profile's own process rules |
 
 Out of scope — note and stop, do not audit here: the proxy's HTTP handling
-(`src/proxy.rs`) except where it changes what the profile allows; CLI parsing
+(`src/proxy/server.rs`, `src/proxy/request.rs`) except where it changes what the profile allows; CLI parsing
 (`src/main.rs`, `src/config.rs`) except as the source of attacker-influenced
 strings.
 

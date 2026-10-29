@@ -23,7 +23,7 @@ Run in this order, with no warnings and no failures (AGENTS.md, "Before finishin
 AGENTS.md requires a second review for some changes, run before the PR is opened. Tick the
 one that applies, or the last box if none does.
 
-- [ ] `/security-audit` — touches `src/profile.rs`, `src/proxy.rs`, `src/egress.rs` or `src/sandbox.rs`
+- [ ] `/security-audit` — touches `src/profile.rs`, `src/proxy/`, `src/tunnel/` or `src/sandbox.rs`
 - [ ] `spec-review` — adds or changes something in `docs/specs/`
 - [ ] `architecture-review` — new module, moved responsibility, new trait or layer
 - [ ] `performance-review` — startup path, async code, or an `NFR-` budget

@@ -12,9 +12,9 @@ The crate. One binary, one module per responsibility. Each module states its own
 | Every failure the binary can report | `error` |
 | Resolving a command word to a program on disk | `executable` |
 | The per-invocation secret that scopes the proxy to sandme's child | `credential` |
-| Which network destinations the proxy may reach | `egress` |
-| The HTTP forward proxy the child's egress is routed through | `proxy` |
-| Git's SSH transport over the proxy's `CONNECT` | `tunnel` |
+| Which network destinations the proxy may reach | `proxy/egress.rs` |
+| The HTTP forward proxy the child's egress is routed through | `proxy/` |
+| Git's SSH transport over the proxy's `CONNECT` | `tunnel/` |
 | Running a command under the platform's sandbox | `sandbox/` |
 
 `sandbox/` holds the platform-independent launch path and one backend per platform: `seatbelt/`
@@ -37,5 +37,5 @@ the backends, not duplicated inside both.
 `docs/guidelines/architecture/` on the CLI surface; `docs/guidelines/performance/` on the startup
 path and async. Read the guideline rather than this file — an AGENTS.md MUST NOT restate one.
 
-Changing `sandbox/seatbelt/profile.rs`, `proxy`, `egress` or how the child is launched triggers
+Changing `sandbox/seatbelt/profile.rs`, `src/proxy/`, `src/tunnel/` or how the child is launched triggers
 `/security-audit` before the PR. The root `AGENTS.md` carries the full review table.

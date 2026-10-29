@@ -218,7 +218,7 @@ A new diagnostic line is written to stderr when the IPv6 loopback listener canno
 | FR-1101 | `routes_http_egress_through_the_proxy`, `relays_to_host_loopback_when_private_egress_is_allowed` (`tests/cli.rs`) — the plain-HTTP relay still reaches the vetted origin through the rewritten forward path |
 | FR-1102 | `strips_hop_by_hop_headers_and_pins_host_to_the_vetted_authority` (`tests/cli.rs`) — the origin's echo does not carry `Proxy-Connection` |
 | FR-1103 | `strips_hop_by_hop_headers_and_pins_host_to_the_vetted_authority` (`tests/cli.rs`) — the origin's echo carries the vetted authority as `Host`, not the client's value |
-| FR-1104 | `refuses_to_relay_to_a_cgnat_destination_by_default`, `refuses_to_relay_to_a_benchmarking_destination_by_default` (`tests/cli.rs`); `restricts_every_range_the_sandbox_denies_directly`, `relays_to_ordinary_public_addresses`, `gates_cgnat_and_benchmarking_on_private_egress` (`src/egress.rs`) |
+| FR-1104 | `refuses_to_relay_to_a_cgnat_destination_by_default`, `refuses_to_relay_to_a_benchmarking_destination_by_default` (`tests/cli.rs`); `restricts_every_range_the_sandbox_denies_directly`, `relays_to_ordinary_public_addresses`, `gates_cgnat_and_benchmarking_on_private_egress` (`src/proxy/egress.rs`) |
 | FR-1105 | `warns_when_the_ipv6_loopback_listener_cannot_bind` (`tests/cli.rs`) |
 | NFR-1101 | FR-1101's tests, plus construction: `forward` receives the vetted `&[SocketAddr]` and calls no resolver |
 
@@ -257,3 +257,4 @@ None.
 | --- | --- |
 | 2026-09-12 | Initial draft, covering issue #32 findings 1–4 as deltas to SPEC-0003; finding 5 recorded as a deliberate non-goal. |
 | 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#49](https://github.com/leopepe/sandme/pull/49); every Verification test and its supporting production code is present on `main`. Ticked T-1101…T-1105, whose boxes were left unchecked when the work landed ([#34](https://github.com/leopepe/sandme/issues/34)). |
+| 2026-10-24 | Updated the FR-1104 Verification location for range and opt-out tests to `src/proxy/egress.rs`; requirements and status unchanged. |

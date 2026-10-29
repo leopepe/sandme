@@ -215,15 +215,15 @@ parsed. `%h`/`%p` are ssh's own destination placeholders.
 
 | Requirement | Verified by |
 | --- | --- |
-| FR-1201 | `wires_the_git_ssh_command_into_the_child` (`tests/cli.rs`); `builds_a_git_ssh_command_that_names_the_proxy_command_sentinel` (`src/tunnel.rs`) |
+| FR-1201 | `wires_the_git_ssh_command_into_the_child` (`tests/cli.rs`); `builds_a_git_ssh_command_that_names_the_proxy_command_sentinel` (`src/tunnel/client.rs`) |
 | FR-1202 | `keeps_a_user_supplied_git_ssh_command` (`tests/cli.rs`) |
 | FR-1203 | `reaches_an_origin_through_the_ssh_connect_tunnel` (`tests/cli.rs`) — the CONNECT is authorised by the credential from `HTTP_PROXY`; manual measurement SC-1201 against real GitHub |
 | FR-1204 | `reaches_an_origin_through_the_ssh_connect_tunnel` (`tests/cli.rs`) — the origin's reply returns across the tunnel |
-| FR-1205 | Manual: `route`/`unauthorized`/`refuse` (`src/proxy.rs`) answer the non-2xx; the tunnel maps it to `SandmeError::TunnelRefused` (`src/tunnel.rs`) |
+| FR-1205 | `reports_a_refused_ssh_connect_with_the_reserved_status` (`tests/tunnel.rs`) checks both 403 and 407, the exact CONNECT target and Basic header, exit 125, empty stdout and the target/status diagnostic; `route`/`unauthorized`/`refuse` (`src/proxy/request.rs`) answer the non-2xx; the tunnel maps it to `SandmeError::TunnelRefused` (`src/tunnel/client.rs`) |
 | FR-1206 | `wire_git_ssh` guards on `current_exe` (`src/sandbox.rs`); covered by inspection — a machine where `current_exe` fails is not reproducible in the suite |
 | NFR-1201 | `wires_the_git_ssh_command_into_the_child` (`tests/cli.rs`) — no user configuration set |
 | NFR-1202 | `routes_network_only_to_the_proxy` (`src/profile.rs`) — the profile is unchanged and permits only the proxy |
-| NFR-1203 | `builds_a_git_ssh_command_that_names_the_proxy_command_sentinel` (`src/tunnel.rs`) — the value carries no secret, only the sentinel |
+| NFR-1203 | `builds_a_git_ssh_command_that_names_the_proxy_command_sentinel` (`src/tunnel/client.rs`) — the value carries no secret, only the sentinel |
 
 ## Assumptions
 
@@ -265,3 +265,4 @@ None.
 | --- | --- |
 | 2026-09-12 | Initial draft, covering issue #33 (split from #29). Adds git-over-SSH tunnelling through the proxy over HTTP CONNECT, reusing SPEC-0003's credential; no Seatbelt profile change. |
 | 2026-09-12 | Status `Draft` → `Accepted` → `Implemented`. Shipped with PR [#50](https://github.com/leopepe/sandme/pull/50); all tasks are ticked and every Verification test exists ([#34](https://github.com/leopepe/sandme/issues/34)). |
+| 2026-10-24 | Updated Verification command-builder/runner locations to `src/tunnel/client.rs` and server request handlers to `src/proxy/request.rs`; FR-1205 now cites the 403/407 refusal characterization in `tests/tunnel.rs`. Requirements and status unchanged. |

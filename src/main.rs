@@ -4,7 +4,6 @@
 
 mod config;
 mod credential;
-mod egress;
 mod error;
 mod executable;
 mod proxy;
@@ -141,7 +140,8 @@ fn failure_code(error: &SandmeError) -> ExitCode {
         | SandmeError::TunnelUnreachable { .. }
         | SandmeError::TunnelRefused { .. }
         | SandmeError::SandboxNotEnforced { .. }
-        | SandmeError::SharedPathTooBroad { .. }
-        | SandmeError::UnsafeProfilePath { .. } => ExitCode::from(SANDME_FAILURE),
+        | SandmeError::SharedPathTooBroad { .. } => ExitCode::from(SANDME_FAILURE),
+        #[cfg(target_os = "macos")]
+        SandmeError::UnsafeProfilePath { .. } => ExitCode::from(SANDME_FAILURE),
     }
 }

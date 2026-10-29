@@ -8,11 +8,11 @@
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 /// Why a destination was refused, worded so the user knows what to change.
-pub const RESTRICTED_DESTINATION: &str = "loopback, private and link-local destinations are not \
+pub(super) const RESTRICTED_DESTINATION: &str = "loopback, private and link-local destinations are not \
      relayed; set allow_private_egress (SANDME_ALLOW_PRIVATE_EGRESS=1) to permit them";
 
 /// Where a request may go, once its destination has been resolved.
-pub enum Destination {
+pub(super) enum Destination {
     /// Addresses the proxy may connect to.
     Permitted(Vec<SocketAddr>),
     /// At least one address is one FR-201 refuses.
@@ -28,7 +28,7 @@ pub enum Destination {
 /// that misses them is decoration. A name that yields even one restricted
 /// address is refused whole — allowing the rest would leave the client to
 /// pick, and the client is what this rule constrains (FR-206).
-pub async fn resolve(host: &str, port: u16, allow_private_egress: bool) -> Destination {
+pub(super) async fn resolve(host: &str, port: u16, allow_private_egress: bool) -> Destination {
     let Ok(addresses) = tokio::net::lookup_host((host, port)).await else {
         return Destination::Unresolvable;
     };

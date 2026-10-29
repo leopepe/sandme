@@ -128,6 +128,7 @@ pub enum SandmeError {
         "path {path:?} contains a character that cannot be placed in the sandbox profile \
          (a quote, backslash, or control character); refusing to run"
     )]
+    #[cfg(target_os = "macos")]
     UnsafeProfilePath {
         /// The offending path, as it would have been written into the profile.
         path: String,

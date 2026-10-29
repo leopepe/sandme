@@ -24,9 +24,10 @@ context: |
   memory. Conventional commits.
 
   These files are the sandbox itself: src/sandbox/seatbelt/profile.rs, src/sandbox/landlock/,
-  src/proxy.rs, src/egress.rs, src/sandbox/mod.rs. A rule in the wrong order or a ruleset
-  granting one path too many is the product failing with every test green. Any change touching
-  them is security-critical and gets the adversarial security lens.
+  src/proxy/, src/tunnel/, src/sandbox/mod.rs. A rule in the wrong order or a
+  ruleset granting one path too many is the product failing with every test
+  green. Any change touching them is security-critical and gets the adversarial
+  security lens.
 
   Dependencies: only well-known, well-maintained crates, and only for a requirement the standard
   library and the existing Cargo.toml cannot satisfy.
