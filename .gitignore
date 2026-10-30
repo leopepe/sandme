@@ -6,6 +6,7 @@
 .pi-subagents/
 .claude/worktrees/
 .serena/
+.idea/
 
 # graft's local graph cache — regenerable, not committed (run `graft build`).
 /graft/
